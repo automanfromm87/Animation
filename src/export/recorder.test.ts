@@ -133,4 +133,82 @@ export default suite('导出录制器', [
       equal(code, 'encoder-starved');
     },
   ],
+  [
+    '带配音音轨:并进捕获流、录制器带音频码率、自动格式换成带 Opus 的;收尾只停自己的轨道,不停播放器的音轨',
+    async () => {
+      const ex = createExportStub({ supportedTypes: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9'] });
+      let audioStops = 0;
+      const audioTrack = {
+        kind: 'audio',
+        stop: () => {
+          audioStops += 1;
+        },
+      } as unknown as MediaStreamTrack;
+      let now = 5000;
+      const rec = ExportRecorder.create({
+        main: { width: 1280, height: 720 } as HTMLCanvasElement,
+        mainCssWidth: () => 1280,
+        veilColor: '#fff',
+        total: 10,
+        env: ex.env,
+        now: () => now,
+        audioTrack,
+      });
+      ok(ex.streamTracks().includes(audioTrack), '配音音轨没有并进捕获流');
+      equal(ex.recorderOptions()[0]?.['audioBitsPerSecond'], 128_000);
+      equal(rec.mimeType, 'video/webm;codecs=vp9,opus', '带配音时应选带 Opus 的格式');
+      rec.start();
+      const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, position: 0 };
+      for (let i = 0; i < 12; i++) {
+        now += 34;
+        rec.tick(now, frame);
+      }
+      rec.finish(true);
+      await rec.done;
+      equal(ex.tracksStopped(), 1, '捕获的视频轨道应当停掉');
+      equal(audioStops, 0, '配音音轨归播放器管,录制器不该停它');
+
+      const plain = createExportStub({ supportedTypes: ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9'] });
+      const noAudio = ExportRecorder.create({
+        main: { width: 1280, height: 720 } as HTMLCanvasElement,
+        mainCssWidth: () => 1280,
+        veilColor: '#fff',
+        total: 10,
+        env: plain.env,
+      });
+      equal(noAudio.mimeType, 'video/webm;codecs=vp9', '没有配音时候选不变');
+      equal(plain.recorderOptions()[0]?.['audioBitsPerSecond'], undefined, '没有配音不该设音频码率');
+      noAudio.cancel();
+      await noAudio.done.catch(() => undefined);
+    },
+  ],
+  [
+    '捕获流加不了音轨:照常录画面(不带音频码率),提示一次',
+    async () => {
+      const ex = createExportStub({ noAddTrack: true });
+      const warnings: unknown[] = [];
+      const { warn } = console;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args);
+      };
+      let rec: ExportRecorder;
+      try {
+        rec = ExportRecorder.create({
+          main: { width: 1280, height: 720 } as HTMLCanvasElement,
+          mainCssWidth: () => 1280,
+          veilColor: '#fff',
+          total: 10,
+          env: ex.env,
+          audioTrack: { kind: 'audio', stop: () => undefined } as unknown as MediaStreamTrack,
+        });
+      } finally {
+        console.warn = warn;
+      }
+      equal(warnings.length, 1, '应当提示一次成片没有配音');
+      equal(ex.recorderOptions()[0]?.['audioBitsPerSecond'], undefined);
+      equal(ex.streamTracks().length, 1, '流里只有视频轨道');
+      rec.cancel();
+      await rec.done.catch(() => undefined);
+    },
+  ],
 ]);

@@ -62,6 +62,11 @@ import type { Segment } from './film';
   `setPaused`、`exportVideo(options?)`、`getState()`。
   选项:转场、循环、字幕/进度条样式、`onSegment` / `onError` / `onPausedChange` / `onEnded`、
   时钟与环境注入(`clock` / `exportEnv` / `offlineEnv`,测试用)。
+- **配音** `timedSegment({ id, name, lines: [{ id, text }] }, async (env) => …)`:按台词对齐的分段,
+  `env.untilLine(id)` / `env.untilMark(lineId, mark)` / `env.remaining(id)` 踩提示点,时长与字幕时间来自配音时间表;
+  `prepareVoice(segments, { sheetUrl })` 加载时统一套用(没有时间表时干跑排草稿),产出时长确定的普通分段(`segment.voice.clips`)。
+  控制器 `setAudioEnabled(on)`(须在点击回调里调用)、`getState().audio`;`exportVideo({ audio })` 成片带配音(缺省带)。
+  外部配音方的接入见 `docs/voice.md`。
 - **单帧预览** `previewFrameAt(segments, seconds, canvas)` → `{ index, offset, name, subtitle, position }`:
   只挂目标段、虚拟时钟快进(干跑)到位,画一帧即释放;与离线导出同一套步进。
   页面:`/?scene=derivatives&preview=480` 直接看第 480 秒。

@@ -19,6 +19,8 @@ import {
   subtitleSafeBottom,
 } from './timeline';
 import { Veil } from './transition';
+import { browserLiveAudioEnv } from '../audio/live';
+import { VoicePlayback, filmHasVoice } from './voicePlayer';
 import type {
   FilmController,
   FilmOptions,
@@ -30,6 +32,7 @@ import type {
 
 // 对外 API 统一从这里导出(宿主与内容脚本只 import './film')。
 export type {
+  FilmAudioOptions,
   FilmController,
   FilmOptions,
   FilmState,
@@ -38,8 +41,10 @@ export type {
   SegmentContext,
   SegmentErrorPhase,
   SegmentHandle,
+  SegmentVoice,
   Subtitle,
   SubtitleStyle,
+  VoiceClip,
 } from './types';
 export type { ExportHandle, ExportMode, ExportOptions, FilmErrorCode } from '../export/types';
 export { FilmError, isFilmError } from '../export/types';
@@ -54,9 +59,31 @@ export {
   CARD_INTRO_SECONDS,
   cardSegment,
   directedSegment,
+  playDirected,
   runCard,
   sceneSegmentHandle,
 } from './segments';
+export type {
+  CueEvent,
+  LineTiming,
+  SegmentTiming,
+  TimedEnv,
+  TimedLine,
+  TimedSegment,
+  TimedSegmentOptions,
+  TimingObserver,
+} from './timed';
+export { estimateSpeech, isTimedSegment, timedSegment } from './timed';
+export type { DraftResult, DryRunEnv, DryRunResult, PrepareVoiceOptions, PreparedFilm } from './voice';
+export { draftTiming, prepareVoice, runSegmentToEnd, voiceIdOf, voiceLineIdOf } from './voice';
+export type {
+  AudioRef,
+  VoiceLineTiming,
+  VoiceProblem,
+  VoiceSegmentTiming,
+  VoiceTimingSheet,
+} from './voiceSheet';
+export { markNames, parseVoiceSheet, stripMarks } from './voiceSheet';
 
 /** 失败的导出句柄(同步就能判定的错误)。 */
 function failedExport(error: FilmError): ExportHandle {
@@ -98,12 +125,14 @@ export function runFilm(
       total: 0,
       paused: false,
       exporting: false,
+      audio: { available: false, enabled: false },
     };
     return Object.assign(noop, {
       dispose: noop,
       seekTo: noop,
       seekToTime: noop,
       setPaused: noop,
+      setAudioEnabled: noop,
       exportVideo: (): ExportHandle =>
         failedExport(new FilmError('no-segments', '影片没有任何分段')),
       getState: (): FilmState => ({ ...state }),
@@ -116,6 +145,9 @@ export function runFilm(
   const veilColor = options?.transitionColor ?? lightTheme.background;
   const showSubtitles = options?.subtitles !== false;
   const veil = new Veil(1);
+  // 配音:分段挂了音频才有;没有 Web Audio 的环境照常播,只是没声音。
+  const audioEnv = filmHasVoice(segments) ? (options?.audio?.env ?? browserLiveAudioEnv()) : null;
+  const voice = audioEnv ? new VoicePlayback(audioEnv) : null;
   let disposed = false;
   let recorder: ExportRecorder | null = null;
   /** 进行中的导出(离线或实时):同一时间只允许一个。 */
@@ -296,6 +328,8 @@ export function runFilm(
         if (!paused && manualFollow) {
           manualFollow.lastWall = wallNow();
         }
+        // 暂停时帧循环会停:声音在这里立刻停下,不等下一帧。
+        syncVoice();
         if (options?.onPausedChange) {
           callHost('onPausedChange', () => options.onPausedChange?.(paused));
         }
@@ -317,6 +351,14 @@ export function runFilm(
       progress: plan.total > 0 ? Math.min(1, (driver.completed + elapsed) / plan.total) : 0,
       index: driver.index,
     };
+  };
+  /** 配音对账:当前分段 + 段内秒数 + 是否在播;顺便让下一段的音频先加载。 */
+  const syncVoice = (): void => {
+    if (!voice) {
+      return;
+    }
+    const next = segments[driver.index + 1] ?? (options?.loop === false ? null : (segments[0] ?? null));
+    voice.sync(driver.currentSegment(), driver.segmentElapsed(), !driver.paused, next);
   };
   const recorderFrame = (state: ChromeState): RecorderFrame => ({
     veilAlpha: state.veilAlpha,
@@ -348,6 +390,7 @@ export function runFilm(
     veil.tick(now, driver.paused);
     const state = chromeState();
     chrome.render(state);
+    syncVoice();
     // 录制会话的 tick 自己兜住所有异常,不会打断这条循环。
     recorder?.tick(now, recorderFrame(state));
     // 本帧里可能已经被唤醒排过下一帧(比如导出在 tick 里失败收尾 -> onFinish -> wake):
@@ -406,9 +449,12 @@ export function runFilm(
       return failedExport(new FilmError('busy', '已经在导出了'));
     }
     let rec: ExportRecorder;
+    // 成片带配音:把播放器的声音接进录制的媒体流(导出按钮的点击就是用户操作,顺便开声音)。
+    const audioTrack = voice && exportOptions?.audio !== false ? voice.captureTrack() : null;
     try {
       rec = ExportRecorder.create({
         main: canvas,
+        audioTrack,
         mainCssWidth: () => viewport.width,
         veilColor,
         total: plan.total,
@@ -421,6 +467,7 @@ export function runFilm(
             return;
           }
           recorder = null;
+          voice?.releaseCapture();
           if (disposed) {
             return;
           }
@@ -543,6 +590,7 @@ export function runFilm(
       total: plan.total,
       paused: driver.paused,
       exporting: activeExport !== null || recorder !== null,
+      audio: { available: voice !== null, enabled: voice?.enabled ?? false },
     };
   };
 
@@ -563,6 +611,7 @@ export function runFilm(
     driver.dispose();
     veil.dispose();
     chrome.dispose();
+    voice?.dispose();
   };
 
   driver.start();
@@ -579,5 +628,10 @@ export function runFilm(
     },
     exportVideo,
     getState,
+    setAudioEnabled: (enabled: boolean): void => {
+      voice?.setEnabled(enabled);
+      syncVoice();
+      wake();
+    },
   });
 }

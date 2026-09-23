@@ -1,8 +1,12 @@
+import { AudioLibrary } from '../audio/library';
+import { clampPlanes, mixWindow } from '../audio/mix';
+import type { PlacedClip } from '../audio/types';
 import type { FrameClock } from '../engine';
 import type { SubtitleVisual } from '../export/composite';
 import { compositeFrame } from '../export/composite';
 import type { VideoEncoderSink } from '../export/encoder';
 import type { OfflineEnv } from '../export/offlineEnv';
+import { EXPORT_AUDIO_CHANNELS, EXPORT_AUDIO_SAMPLE_RATE } from '../export/offlineEnv';
 import { DEFAULT_MAX_LONG_EDGE, exportGeometry, exportSize } from '../export/output';
 import { MAX_FRAME_ERRORS } from '../export/recorder';
 import type { ExportHandle, ExportOptions } from '../export/types';
@@ -102,6 +106,118 @@ export interface OfflineExport {
   abort(error: FilmError): void;
 }
 
+/** 音频一块一秒:跟着视频帧往前推,内存只占一块。 */
+const AUDIO_CHUNK_SECONDS = 1;
+
+/**
+ * 离线导出的配音音轨。分段**实际**起播时(虚拟时钟)把它的片段放到「起点 + 段内偏移」上 ——
+ * 每段实际结束与声明时长有出入、段间还有转场,按全片绝对时间预排会越排越偏。
+ * 跟着视频帧一秒一块混好写进编码端;音轨从 0 开始首尾相接(没声音的地方是静音)。
+ * 写过的片段摘掉,不再有人用的音频还掉解码结果(一个长文件管好几段时,用完最后一段才还)。
+ */
+class OfflineVoiceTrack {
+  private readonly segments: readonly Segment[];
+  private readonly library: AudioLibrary;
+  private readonly sink: VideoEncoderSink;
+  private readonly sampleRate: number;
+  private readonly channels: number;
+  private readonly chunk: number;
+  /** 放上时间轴、还没写完的片段(导出时间,秒)。 */
+  private clips: PlacedClip[] = [];
+  /** 已写进去的采样数(每声道)。用整数计数,时间戳才不会有累加误差。 */
+  private written = 0;
+  /** 每个地址最后被第几段用到。 */
+  private readonly lastUse = new Map<string, number>();
+  /** 已起播的最后一段。 */
+  private current = -1;
+
+  constructor(
+    segments: readonly Segment[],
+    library: AudioLibrary,
+    sink: VideoEncoderSink,
+    sampleRate: number,
+    channels: number,
+  ) {
+    this.segments = segments;
+    this.library = library;
+    this.sink = sink;
+    this.sampleRate = sampleRate;
+    this.channels = channels;
+    this.chunk = Math.max(1, Math.round(AUDIO_CHUNK_SECONDS * sampleRate));
+    segments.forEach((segment, i) => {
+      for (const clip of segment.voice?.clips ?? []) {
+        this.lastUse.set(clip.url, i);
+      }
+    });
+  }
+
+  /** 第 index 段在导出时间 at(秒)起播:放上它的片段并开始解码,顺手预加载下一段。 */
+  segmentStarted(index: number, segment: Segment, at: number): void {
+    this.current = Math.max(this.current, index);
+    for (const clip of segment.voice?.clips ?? []) {
+      this.clips.push({
+        key: `${index}:${clip.id}`,
+        url: clip.url,
+        at: at + clip.start,
+        offset: clip.offset,
+        duration: clip.duration,
+      });
+      void this.library.load(clip.url);
+    }
+    for (const clip of this.segments[index + 1]?.voice?.clips ?? []) {
+      void this.library.load(clip.url);
+    }
+  }
+
+  /** 把结束时刻不晚于 t(秒,当前视频时间)的整块写进去。 */
+  async flushUntil(t: number): Promise<void> {
+    const limit = Math.floor(t * this.sampleRate + 1e-6);
+    while (this.written + this.chunk <= limit) {
+      await this.writeChunk(this.chunk);
+    }
+  }
+
+  /** 收尾:写到视频总长 end(秒),最后一块可以不足一秒。 */
+  async finish(end: number): Promise<void> {
+    const total = Math.round(end * this.sampleRate);
+    while (this.written < total) {
+      await this.writeChunk(Math.min(this.chunk, total - this.written));
+    }
+  }
+
+  /** 还掉全部解码结果。 */
+  dispose(): void {
+    for (const url of this.lastUse.keys()) {
+      this.library.release(url);
+    }
+    this.clips = [];
+  }
+
+  private async writeChunk(frames: number): Promise<void> {
+    const t0 = this.written / this.sampleRate;
+    const t1 = (this.written + frames) / this.sampleRate;
+    const live = this.clips.filter((c) => c.at < t1 && c.at + c.duration > t0);
+    // 与这块重叠的片段必须先解好(失败的按静音,AudioLibrary 已经报过)。
+    await Promise.all(live.map((c) => this.library.load(c.url)));
+    const planes = Array.from({ length: this.channels }, () => new Float32Array(frames));
+    mixWindow(planes, this.sampleRate, t0, live, (url) => this.library.peek(url));
+    clampPlanes(planes);
+    await this.sink.addAudio(planes, t0);
+    this.written += frames;
+    const done = this.clips.filter((c) => !(c.at + c.duration > t1));
+    if (done.length === 0) {
+      return;
+    }
+    this.clips = this.clips.filter((c) => c.at + c.duration > t1);
+    const inUse = new Set(this.clips.map((c) => c.url));
+    for (const { url } of done) {
+      if (!inUse.has(url) && (this.lastUse.get(url) ?? -1) <= this.current) {
+        this.library.release(url);
+      }
+    }
+  }
+}
+
 function sanitizeFps(fps: number | undefined): number {
   return fps !== undefined && Number.isFinite(fps) && fps >= 1 ? Math.min(120, Math.round(fps)) : OFFLINE_DEFAULT_FPS;
 }
@@ -158,6 +274,12 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
     if (!ctx) {
       throw new FilmError('init', '导出初始化失败:拿不到导出画布的 2D 上下文');
     }
+    // 配音:要带(缺省带)、片子里有音频、环境解得了码,才向编码端要音频轨。
+    const hasVoice = init.segments.some((segment) => (segment.voice?.clips.length ?? 0) > 0);
+    const loader = opts?.audio !== false && hasVoice ? init.env.audio : undefined;
+    if (opts?.audio !== false && hasVoice && !loader) {
+      console.warn('[export] 当前环境解码不了音频,成片没有配音');
+    }
     let encoder: VideoEncoderSink | null;
     try {
       encoder = await init.env.encoder({
@@ -166,6 +288,9 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
         height: size.height,
         fps,
         ...(opts?.mimeType !== undefined ? { mimeType: opts.mimeType } : {}),
+        ...(loader
+          ? { audio: { sampleRate: EXPORT_AUDIO_SAMPLE_RATE, numberOfChannels: EXPORT_AUDIO_CHANNELS } }
+          : {}),
       });
     } catch (e) {
       throw new FilmError('encoder', `编码器初始化失败:${describeError(e)}`, describeError(e));
@@ -178,8 +303,22 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
       await sink.cancel().catch(() => undefined);
       throw stopped;
     }
+    if (loader && !sink.audio) {
+      console.warn('[export] 浏览器编不了这个容器的音频,成片没有配音');
+    }
+    const voice =
+      loader && sink.audio
+        ? new OfflineVoiceTrack(
+            init.segments,
+            new AudioLibrary(loader),
+            sink,
+            EXPORT_AUDIO_SAMPLE_RATE,
+            EXPORT_AUDIO_CHANNELS,
+          )
+        : null;
     const yielder = init.env.createYielder();
     const clock = new ManualClock();
+    const startTime = clock.now();
     const main = init.env.createCanvas();
     const veil = new Veil(1);
     const visual = init.subtitleVisual;
@@ -202,7 +341,10 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
       veil,
       hooks: {
         beforeSegment: () => undefined,
-        segmentStarted: () => undefined,
+        // 分段挂载的这一刻就是它时间线的 0 秒(淡入白场期间已经在播):配音按这个实际起点放。
+        segmentStarted: (index, segment) => {
+          voice?.segmentStarted(index, segment, (clock.now() - startTime) / 1000);
+        },
         contextFor,
         passEnded: () => undefined,
         // 离线实例只播一遍:不走导出锁,片尾照常结束。
@@ -234,12 +376,13 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
         wake: () => undefined,
       },
     });
-    const startTime = clock.now();
     // 上限:声明总时长 + 每段两次转场,再放宽一倍。某段的时间线停不下来时不能无限渲染下去。
     const budgetSeconds =
       (init.plan.total + (init.segments.length * 2 * init.transitionMs) / 1000 + 5) * 2;
     const maxFrames = Math.ceil(budgetSeconds * fps);
     let frameErrors = 0;
+    /** 已编码的视频帧数(音轨收尾写到 帧数 / 帧率)。 */
+    let frames = 0;
     try {
       driver.start();
       for (let i = 0; ; i++) {
@@ -287,6 +430,14 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
         } catch (e) {
           throw new FilmError('encoder', `视频编码失败:${describeError(e)}`, describeError(e));
         }
+        frames = i + 1;
+        if (voice) {
+          try {
+            await voice.flushUntil(frames / fps);
+          } catch (e) {
+            throw new FilmError('encoder', `音频编码失败:${describeError(e)}`, describeError(e));
+          }
+        }
         reportProgress(driver.position());
         if (ended) {
           break;
@@ -296,6 +447,16 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
             'overrun',
             `影片播了 ${(i / fps).toFixed(1)} 秒还没结束(声明总时长 ${init.plan.total.toFixed(1)} 秒),导出中止`,
           );
+        }
+      }
+      if (stopped) {
+        throw stopped;
+      }
+      if (voice) {
+        try {
+          await voice.finish(frames / fps);
+        } catch (e) {
+          throw new FilmError('encoder', `音频编码失败:${describeError(e)}`, describeError(e));
         }
       }
       if (stopped) {
@@ -313,6 +474,7 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
       yielder.close();
       driver.dispose();
       veil.dispose();
+      voice?.dispose();
       // 两张导出分辨率的画布不等 GC,立刻还掉像素缓冲(连着导几次也不攒内存)。
       main.width = 0;
       main.height = 0;

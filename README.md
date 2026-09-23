@@ -2,15 +2,16 @@
 
 Manim 风格的 2D/3D 数学动画引擎,面向数学科普。Canvas 2D 渲染;公式由 MathJax 排成矢量字形,和图形画在同一张画布上。
 内置讲解动画的常用「词汇」:错峰出场、高亮圈注、换色、花括号与角标、坐标网格、黎曼和、切线、按式子结构推导……
-还带一个影片播放器(分段、字幕、章节进度条、转场),能把整部片子逐帧离线导出成视频。
+还带一个影片播放器(分段、字幕、章节进度条、转场),能把整部片子逐帧离线导出成视频;
+配音可以由外部提供 —— 交一份时间表和音频,时长、字幕、动画提示点就全对上。
 运行时依赖只有 MathJax(公式排版)与 mediabunny(视频封装),React 只用来挂一个画布和工具条。
 
 **目录**
 
 1. [跑起来](#1-跑起来) · 2. [五分钟上手](#2-五分钟上手) · 3. [场景](#3-场景) · 4. [图元](#4-图元) ·
 5. [动画](#5-动画) · 6. [相机与取景](#6-相机与取景) · 7. [3D](#7-3d) · 8. [影片](#8-影片) ·
-9. [导出视频](#9-导出视频) · 10. [开发与测试](#10-开发与测试) · 11. [目录与分层](#11-目录与分层) ·
-12. [已知取舍](#12-已知取舍) · 13. [更多文档](#13-更多文档)
+9. [配音](#9-配音) · 10. [导出视频](#10-导出视频) · 11. [开发与测试](#11-开发与测试) ·
+12. [目录与分层](#12-目录与分层) · 13. [已知取舍](#13-已知取舍) · 14. [更多文档](#14-更多文档)
 
 ## 1. 跑起来
 
@@ -21,7 +22,7 @@ npm install
 npm run dev      # 打开 http://localhost:5173/
 ```
 
-六个入口,靠 URL 的 `?scene=` 切换(各场景按需懒加载):
+七个入口,靠 URL 的 `?scene=` 切换(各场景按需懒加载):
 
 | 地址                  | 内容                                                                 | 可导出 |
 | --------------------- | -------------------------------------------------------------------- | ------ |
@@ -31,10 +32,11 @@ npm run dev      # 打开 http://localhost:5173/
 | `/?scene=film`        | 勾股定理短片:片头 + 正片 + 片尾(约 30 秒)                           | 是     |
 | `/?scene=derivatives` | 《导数》长片:35 段约 9 分钟,五章 + 习题                              | 是     |
 | `/?scene=topology`    | 《拓扑学基础》前三章:21 段约 3 分钟                                  | 是     |
+| `/?scene=voicedemo`   | 配音演示片《导数就是切线的斜率》:3 段约 40 秒,按台词对齐(见 [9. 配音](#9-配音)) | 是     |
 
 页面操作:
 
-- 右上角工具条:画幅切换、暂停/播放;影片还有「导出」按钮。能导出的格式(实时录制支持的 ∪ WebCodecs 能编的)
+- 右上角工具条:画幅切换、暂停/播放;影片还有「导出」按钮,有配音的影片还有「开启声音」。能导出的格式(实时录制支持的 ∪ WebCodecs 能编的)
   MP4 与 WebM 都有时,再多一个格式下拉框。
 - 总览页可以拖拽 / 滚轮操作,画布获得焦点后也能用方向键平移、`+` / `-` 缩放。开场有一段运镜巡游,
   巡游期间手动操作暂时锁定(暂停时放开,恢复播放后巡游接着走)。
@@ -611,7 +613,70 @@ controller();                 // = dispose()
 `{ index, offset, name, subtitle, position }`(只挂目标段、虚拟时钟干跑到位、画一帧即释放,与离线导出同一套步进)。
 时间线工具:`filmDuration`、`segmentAtTime`、`segmentIndexAt`、`segmentTicks`、`subtitleAt`。
 
-## 9. 导出视频
+## 9. 配音
+
+目标是「外部交音频就能对上」:时长由配音方的时间表说了算,动画按台词踩提示点,字幕跟着音频走,
+播放、预览、导出全自动对齐。给配音方的接入指南(流程、时间表格式、JSON Schema、校验)见 [docs/voice.md](docs/voice.md)。
+
+**写法:按台词对齐的分段**
+
+```ts
+import { Create, Indicate } from '../engine';
+import { timedSegment } from './film';
+
+export const slope = timedSegment(
+  {
+    id: 'slope', // 稳定 id:配音方按它交音频、写时间表
+    name: '斜率',
+    lines: [
+      { id: 'slope-1', text: '先画出函数的图像。' },
+      { id: 'slope-2', text: '这条切线的斜率<mark name="k"/>,就是导数。' }, // <mark> 标出要对齐的词
+    ],
+  },
+  async (env) => {
+    env.scene.add(graph, tangent, formula);
+    await env.play(new Create(graph));
+    await env.untilLine('slope-2'); // 等第二句开口
+    await env.play(new Create(tangent));
+    await env.untilMark('slope-2', 'k'); // 正好说到「斜率」
+    await env.play(new Indicate(formula, { runTime: env.remaining('slope-2') }));
+  },
+);
+```
+
+- **不写时长、不写字幕时间**:有时间表时全听时间表的;没有时间表(音频还没做好)时,影片加载时干跑一遍,
+  按「动画走到了、上一句也说完了」尽早排出草稿时间,照常能播、能预览、能导出。
+- env 另有 `now()`(段内秒数)、`line(id)`(起止与时长)、`remaining(id)`(这句还剩几秒,常用作 runTime)。
+  要在句中某个词之前完成的动画,用剩余时间的比例(`env.remaining(id) * 0.6`)或干脆等标记,
+  不要写成「句尾减常数」—— 配音一慢,那个常数就不够了。
+- 普通分段(`directedSegment` / `cardSegment`)也能配音:台词 id 是「分段id/序号」(分段 id 缺省用分段名),
+  动画时长固定,时间表的时长要与它一致(不一致会报出来),字幕跟着时间表的起止走。
+
+**和配音方的协作**
+
+```bash
+npm run voice:script -- derivatives --out script.json                    # 导出台词稿
+npm run voice:layout -- script.json measured.json --out timing.json      # 参考排期:按实测时长排出时间表(配音方可用)
+npm run voice:check -- derivatives public/voice/derivatives/timing.json  # 校验时间表
+```
+
+1. 导出台词稿交给配音方:每段、每句都有稳定 id,附「这句开口前动画至少要几秒」,排时间时照顾动画。
+2. 配音方生成(或录)音频,写一份 `timing.json`:时间都相对本段开头;整段一个文件、每句一个文件、长文件加偏移都行。
+3. 放进 `public/voice/<影片>/`:影片加载时自动套用(`prepareVoice`)—— 时长、字幕、音频位置全按时间表。
+4. `voice:check` 核对:id 对不对得上、台词改过需不需要重做、时间是否合法、动画在给定的时间里放不放得下。
+
+**播放与导出**
+
+- 声音跟着画面时间线走(字幕、进度条、跳转、导出都信任的那条):暂停、段内跳转、切段、切后台回来都自然对齐;
+  每段按自己的开头锚定,不会越播越偏。
+- 浏览器要求用户点一下才允许出声:有配音的影片工具条显示「开启声音」;程序里用 `controller.setAudioEnabled(true)`
+  (须在点击回调里调用),`controller.getState().audio` 报告有没有配音、开没开声音。
+- 导出自动带声音(`exportVideo({ audio: false })` 可关),见 [10. 导出视频](#10-导出视频)。
+- 缺文件、解不了码都按静音处理并提示,片子照常播;跨域的音频要对方开 CORS;格式以浏览器能解的为准(mp3 / m4a / wav / ogg)。
+- 演示:`/?scene=voicedemo`。在 macOS 上运行 `npm run voice:demo`,用系统语音合成一套示例配音写进 `public/voice/voice-demo/`
+  (这也是给配音方照着写的参考实现),刷新页面就能听到。
+
+## 10. 导出视频
 
 ```ts
 const handle = controller.exportVideo({
@@ -620,6 +685,7 @@ const handle = controller.exportVideo({
   maxLongEdge: 1920,      // 长边上限(竖屏限高)
   mimeType: 'video/mp4',  // 缺省自动(MP4 优先)
   onProgress: (sec, total) => updateProgressBar(sec / total), // 按片内位置报进度
+  audio: true,            // 成片带配音(缺省带;片子里有配音时)
 });
 const blob = await handle.done;   // handle.mode 是实际走的路;handle.cancel() 随时取消
 ```
@@ -636,10 +702,13 @@ const blob = await handle.done;   // handle.mode 是实际走的路;handle.cance
 - 容器:MP4 依次试 H.264 → HEVC → AV1 → VP9,WebM 依次试 VP9 → VP8 → AV1;成片 `Blob.type` 是实际编出来的格式。
   成片长边直接取上限:内容是矢量,放大不糊。
 - 显式 `mode: 'offline'` 时:没有 WebCodecs 报 `'unsupported'`,编不了所选容器报 `'unsupported-mime'`;`'auto'` 遇到这两种情况改走实时录制。
+- 配音:按每段**实际**起播的时刻(虚拟时钟)放音频,跟着视频帧一秒一块混好写进音轨(MP4 用 AAC、WebM 用 Opus,
+  48kHz 立体声);浏览器编不了音频时照常出片,只是没有声音。
 
 **实时录制**(`'realtime'`,没有 WebCodecs 时的回退)
 
 - `captureStream(30)` + `MediaRecorder` 墙钟实时录一遍,合成节流到约 30fps。导出期间跳转、暂停、横竖屏重建都被锁定。
+  有配音时把播放器的声音并进录制的媒体流(导出按钮的点击顺便打开声音)。
 - **页面必须保持在前台**,切到后台会直接中止并报错。看门狗每秒检查编码链路(画布被污染、轨道结束、持续静音、编码器自停、长时间不交数据),出问题立即带错收尾。
 - 导出尺寸按画布 backing 等比缩小,长边默认不超过 1920,奇数边补成偶数(H.264 要求)。
 
@@ -649,7 +718,7 @@ const blob = await handle.done;   // handle.mode 是实际走的路;handle.cance
 - 失败 / 取消都以 `FilmError` reject,宿主按 `code` 分支(`'cancelled'`、`'unsupported'`、`'unsupported-mime'`、`'tainted'`、`'encoder'`、`'overrun'`……,完整列表见 [docs/api.md](docs/api.md)),
   `message` 是给用户看的中文说明;显式指定的容器不支持时直接失败,不静默换格式。
 
-## 10. 开发与测试
+## 11. 开发与测试
 
 ```bash
 npm run typecheck           # tsc -b(含 scripts/*.mjs 的 checkJs)
@@ -661,6 +730,10 @@ npm run check               # typecheck + lint + test + test:runner
 npm run build               # 类型检查 + 生产构建
 npm run bench               # 性能基线(与 scripts/bench.baseline.json 比对)
 npm run bench -- --save     # 存成新基线(--strict 下退化超 25% 失败)
+npm run voice:script -- <影片> [--out 文件]     # 导出配音台词稿(影片:film / derivatives / topology / voice-demo)
+npm run voice:layout -- <台词稿> <实测> [--out]  # 参考排期:按每句实测时长排出时间表
+npm run voice:check -- <影片> <timing.json>     # 校验配音时间表(有错误时退出码 1)
+npm run voice:demo                             # macOS:用系统语音合成配音演示片的示例配音
 ```
 
 - 用例跑在 Vite 的 SSR 模块加载器里(`scripts/test.mjs`),极简测试壳在 `src/testing/harness.ts`(`suite` / `equal` / `ok` / `close` / `throws` / `quiet`)。
@@ -672,7 +745,7 @@ npm run bench -- --save     # 存成新基线(--strict 下退化超 25% 失败)
 - 性能基线跑的是 CPU 侧(排版 / 插值 / 合成 / 曲面提取),看相对变化,不看绝对毫秒;改了排版、帧泵、合成、预览快进就跑一遍。
 - oxlint 的类型感知规则(`no-floating-promises` 等)需要 `oxlint-tsgolint` + `--type-aware`,目前没有启用。
 
-## 11. 目录与分层
+## 12. 目录与分层
 
 ```
 src/
@@ -694,18 +767,24 @@ src/
     scene/            # Scene(组装根)、FramePump(帧泵)、PointerController(指针/键盘)、framing(取景)
     theme/            # Theme、样式解析与预设
     index.ts          # 公共 API,外部只从这里 import
+  audio/              # 声音层(与 export 同级的底层):离线混音、加载解码缓存、实时片段播放(按时间轴对账)
   film/               # 影片播放器与内容
     film.ts           # runFilm 组装根(影片层唯一出口)
     driver.ts         # 分段调度状态机;offline.ts 离线逐帧导出;preview.ts 单帧预览与段内快进
     chrome.ts         # DOM 白闪、字幕条、进度条(只从状态渲染,不回读 DOM)
     segments.ts       # 分段模板:directedSegment、cardSegment;helpers.ts 内容助手
+    timed.ts          # timedSegment:按台词对齐的分段(提示点、草稿排期)
+    voice.ts / voiceSheet.ts / voicePlayer.ts  # 配音:prepareVoice、时间表解析、播放对账
+    voiceScript.ts / voiceCheck.ts / catalog.ts  # 配音工具:台词稿、时间表校验、影片目录
+    voiceDemo.ts      # 配音演示片
     transition.ts / timeline.ts / types.ts
     program.ts / derivatives.ts / rules.ts / mvt.ts / applications.ts / advanced.ts / topology.ts  # 内容脚本
   export/             # 导出层:实时录制、看门狗、合成、选项与错误模型;离线编码端(encoder.ts)与离线环境
   scenes/             # 单场景 demo(总览、勾股、讲解词汇演示)、画廊、场景句柄契约
   testing/            # 极简测试壳、假 2D 上下文、DOM / 导出桩、bench 负载定义
-docs/                 # 分段教程、API 速查、讲解词汇详解
-scripts/              # test.mjs 测试运行器、selftest.mjs、check-imports.mjs、bench.mjs
+docs/                 # 分段教程、API 速查、讲解词汇详解、配音接入指南与时间表 JSON Schema
+scripts/              # test.mjs 测试运行器、selftest.mjs、check-imports.mjs、bench.mjs、voice.mjs(配音工具)、voice-demo-say.mjs
+public/voice/<影片>/  # 配音时间表 timing.json 与音频文件(有就自动套用)
 ```
 
 依赖方向是单向的:
@@ -713,13 +792,14 @@ scripts/              # test.mjs 测试运行器、selftest.mjs、check-imports.
 ```
 app(App / sceneRegistry)→ film → scenes → engine
 app、film、scenes(仅类型)→ export(底层,不依赖任何其它层)
+film、export(仅类型)→ audio(底层,不依赖任何其它层)
 ```
 
 分层由 oxlint 的 `no-restricted-imports` 检查(含 `import type` 与动态 `import()`);依赖环由 oxlint 的 `import/no-cycle` 查值 import,
 纯类型 import 形成的环由 `scripts/check-imports.mjs` 补上。engine 只从 `src/engine/index.ts` 进,film 只从 `src/film/film.ts` 进,
 没在出口文件里的都是内部实现。
 
-## 12. 已知取舍
+## 13. 已知取舍
 
 - 3D 是画家算法 + 每面一个法线,没有 z-buffer:相互穿插的面会穿帮;隐藏线只是背面剔除,非凸的封闭曲面(环面内侧)被自身遮挡的边仍画实线。
 - `Projection3D` 可以让一组网格共享视角,但投影仍以**每个网格自身的原点**为灭点,并排的两个立体不是严格的单点透视。
@@ -729,9 +809,12 @@ app、film、scenes(仅类型)→ export(底层,不依赖任何其它层)
 - `Transform` 是逐点线性插值(与 Manim 相同):相对转角很大时中途会先缩再展开;配对按顺序(按字形身份配对用 `TransformMatchingTex`),
   两组数量不同时多出来的从中心长出来,而不是按比例复制。变形期间 `Layout` 的裁剪与边框不画,祖先容器的不透明度不参与插值。
 - 强调动画的着色不影响公式里 `\textcolor` 显式上色的部分(指定 `part` 时除外)与变形中的覆盖层。
+- 配音按段锚定、段内按时间表的时刻对齐;`directedSegment` 这类动画时长固定的分段不会迁就配音,时间表得迁就它。
+  没有时间表时的草稿时长按约 4.5 字 / 秒估,只是开发阶段的近似。切到后台时声音跟画面一起停,回来按当时的位置接上。
 
-## 13. 更多文档
+## 14. 更多文档
 
 - [docs/segment-authoring.md](docs/segment-authoring.md):从零写一个分段(模板、时长契约、单帧预览调试)。
 - [docs/explainer-vocabulary.md](docs/explainer-vocabulary.md):讲解词汇详解(编排、强调、换色、标注图元、按结构推导的全部选项与示例)。
+- [docs/voice.md](docs/voice.md):配音接入指南(给配音方:台词稿、时间表格式、规则、校验);时间表的 JSON Schema 在 `docs/voice-timing.schema.json`。
 - [docs/api.md](docs/api.md):API 速查(各层出口、关键签名、导出错误码、命令)。

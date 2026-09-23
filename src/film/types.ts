@@ -1,3 +1,4 @@
+import type { LiveAudioEnv } from '../audio/live';
 import type { FrameClock } from '../engine';
 import type { OfflineEnv } from '../export/offlineEnv';
 import type { RecorderEnv } from '../export/recorder';
@@ -28,6 +29,27 @@ export interface Subtitle {
   start: number;
   end: number;
   text: string;
+  /** 台词 id(配音按它对号入座);普通分段不写时按「分段id/序号」。 */
+  id?: string;
+}
+
+/** 本段要播的一段音频(时间相对本段开头,秒)。 */
+export interface VoiceClip {
+  /** 唯一标识(诊断、重排时认出同一段)。 */
+  readonly id: string;
+  /** 解析好的地址。 */
+  readonly url: string;
+  /** 从本段第几秒开始播。 */
+  readonly start: number;
+  /** 最多播多久(文件先放完就先结束)。 */
+  readonly duration: number;
+  /** 从文件的第几秒开始读(一个长文件管好几段时用)。 */
+  readonly offset: number;
+}
+
+/** 分段的配音:prepareVoice 按时间表挂上。 */
+export interface SegmentVoice {
+  readonly clips: readonly VoiceClip[];
 }
 
 /** 播放器传给分段的上下文(与场景上下文是同一个契约)。 */
@@ -35,6 +57,11 @@ export type SegmentContext = SceneContext;
 
 export interface Segment {
   readonly name: string;
+  /**
+   * 稳定 id(配音时间表按它对号入座),和显示名分开 —— 改名不影响配音。
+   * 不写时配音按分段名对应。
+   */
+  readonly id?: string;
   /**
    * 分段时长(秒)。它不只是估算:进度条刻度、点击跳转的定位、字幕与进度的时钟钳位
    * 都以它为准,所以必须与分段实际的时间线一致(内容测试会逐段校验)。
@@ -46,7 +73,15 @@ export interface Segment {
   readonly marker?: 'chapter' | 'segment';
   /** 章节短标题(如 '求导法则'),有则在进度条上标出章名。 */
   readonly chapter?: string;
+  /** 配音(prepareVoice 挂上):播放时按段内时刻出声,导出时混进音轨。 */
+  readonly voice?: SegmentVoice;
   play(canvas: HTMLCanvasElement, context?: SegmentContext): SegmentHandle;
+}
+
+/** 播放器的声音选项。 */
+export interface FilmAudioOptions {
+  /** 播放环境(音频上下文、取文件、页面可见性),缺省浏览器实现。测试注入。 */
+  env?: LiveAudioEnv;
 }
 
 export interface SubtitleStyle {
@@ -119,6 +154,8 @@ export interface FilmOptions {
    * 测试注入假编码端,离线驱动的完整流程在 node 里也能跑。
    */
   offlineEnv?: OfflineEnv;
+  /** 配音播放(分段挂了 voice 时才有声音;浏览器要用户点一下才允许出声,见 setAudioEnabled)。 */
+  audio?: FilmAudioOptions;
 }
 
 /** 播放器状态快照。 */
@@ -137,6 +174,8 @@ export interface FilmState {
   paused: boolean;
   /** 有导出在进行(离线或实时)。离线导出不锁预览,mode 照常是 playing / paused。 */
   exporting: boolean;
+  /** 配音:available 表示片子里有音频;enabled 表示正在出声(用户开过声音)。 */
+  audio: { available: boolean; enabled: boolean };
 }
 
 /** 播放器控制器:可调用(= dispose,兼容旧写法),也带具名方法。 */
@@ -156,4 +195,9 @@ export interface FilmController {
    */
   exportVideo(options?: ExportOptions): ExportHandle;
   getState(): FilmState;
+  /**
+   * 开 / 关声音。浏览器的自动播放策略要求第一次开声音发生在用户操作(点击)里,
+   * 所以请在按钮的点击回调里同步调用它。片子里没有音频时是空操作。
+   */
+  setAudioEnabled(enabled: boolean): void;
 }

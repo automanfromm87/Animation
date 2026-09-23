@@ -35,6 +35,12 @@ export interface SceneHandle {
   readonly setPaused?: (paused: boolean) => void;
   /** 有它就说明这个场景支持导出视频;App 挂载后据此决定是否显示导出按钮。 */
   readonly exportVideo?: (options?: ExportOptions) => ExportHandle;
+  /** 场景有没有配音(有才显示声音开关)。 */
+  readonly audioAvailable?: () => boolean;
+  /**
+   * 开 / 关声音。浏览器要求第一次出声发生在用户操作里:请在按钮的点击回调里同步调用。
+   */
+  readonly setAudioEnabled?: (enabled: boolean) => void;
 }
 
 /** 既能直接挂到 App、也能被影片播放器当成一个分段录制的场景句柄。 */

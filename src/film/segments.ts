@@ -74,8 +74,56 @@ export interface SegmentEnv {
 }
 
 export interface DirectedSegmentOptions {
+  /** 稳定 id(配音时间表按它对应;不写时按分段名)。 */
+  id?: string;
   marker?: 'chapter' | 'segment';
   chapter?: string;
+}
+
+/**
+ * 挂载一个导演式脚本:建好标准 Scene 与 env,跑 direct,取消(跳转/销毁)时吞掉哨兵。
+ * directedSegment 与 timedSegment 共用;timedSegment 在 env 上扩展提示点再交给脚本。
+ */
+export function playDirected(
+  canvas: HTMLCanvasElement,
+  context: SegmentContext | undefined,
+  direct: (env: SegmentEnv) => Promise<void>,
+): SegmentHandle {
+  const scene = filmScene(canvas, context);
+  let cancelled = false;
+  const guard = (): void => {
+    if (cancelled) {
+      throw new SegmentCancelled();
+    }
+  };
+  const env: SegmentEnv = {
+    scene,
+    camera: scene.getCamera(),
+    isCancelled: () => cancelled,
+    play: async (...playables) => {
+      guard();
+      await scene.play(...playables);
+      guard();
+    },
+    wait: async (seconds) => {
+      guard();
+      await scene.wait(seconds);
+      guard();
+    },
+    checkpoint: guard,
+  };
+  const done = (async (): Promise<void> => {
+    try {
+      await direct(env);
+    } catch (e) {
+      if (!(e instanceof SegmentCancelled)) {
+        throw e;
+      }
+    }
+  })();
+  return sceneSegmentHandle(scene, done, () => {
+    cancelled = true;
+  });
 }
 
 /**
@@ -94,44 +142,11 @@ export function directedSegment(
     name,
     duration,
     subtitles,
+    ...(options?.id !== undefined ? { id: options.id } : {}),
     ...(options?.marker !== undefined ? { marker: options.marker } : {}),
     ...(options?.chapter !== undefined ? { chapter: options.chapter } : {}),
     play(canvas, context?) {
-      const scene = filmScene(canvas, context);
-      let cancelled = false;
-      const guard = (): void => {
-        if (cancelled) {
-          throw new SegmentCancelled();
-        }
-      };
-      const env: SegmentEnv = {
-        scene,
-        camera: scene.getCamera(),
-        isCancelled: () => cancelled,
-        play: async (...playables) => {
-          guard();
-          await scene.play(...playables);
-          guard();
-        },
-        wait: async (seconds) => {
-          guard();
-          await scene.wait(seconds);
-          guard();
-        },
-        checkpoint: guard,
-      };
-      const done = (async (): Promise<void> => {
-        try {
-          await direct(env);
-        } catch (e) {
-          if (!(e instanceof SegmentCancelled)) {
-            throw e;
-          }
-        }
-      })();
-      return sceneSegmentHandle(scene, done, () => {
-        cancelled = true;
-      });
+      return playDirected(canvas, context, direct);
     },
   };
 }

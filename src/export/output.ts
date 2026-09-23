@@ -9,6 +9,17 @@ const AUTO_MIME_CANDIDATES = [
 ] as const;
 
 /**
+ * 带配音时的候选:WebM 显式写上 Opus —— 只写视频编码的类型串遇上带音轨的流,
+ * 有的浏览器会拒绝或丢掉声音。mp4 让浏览器自己配音频编码。
+ */
+const AUTO_MIME_CANDIDATES_WITH_AUDIO = [
+  'video/mp4',
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm',
+] as const;
+
+/**
  * 选容器。显式指定而浏览器不支持时返回错误码,而不是悄悄换格式 ——
  * 用户在界面上选了 WebM,拿到的却是 MP4,这种意外比明确失败更糟。
  * isTypeSupported 抛错按「不支持」处理。
@@ -16,6 +27,7 @@ const AUTO_MIME_CANDIDATES = [
 export function pickMimeType(
   want: string | undefined,
   isTypeSupported: (type: string) => boolean,
+  options?: { readonly audio?: boolean },
 ): { mimeType: string; error: FilmErrorCode | null } {
   const supported = (t: string): boolean => {
     try {
@@ -29,7 +41,7 @@ export function pickMimeType(
       ? { mimeType: want, error: null }
       : { mimeType: '', error: 'unsupported-mime' };
   }
-  for (const c of AUTO_MIME_CANDIDATES) {
+  for (const c of options?.audio ? AUTO_MIME_CANDIDATES_WITH_AUDIO : AUTO_MIME_CANDIDATES) {
     if (supported(c)) {
       return { mimeType: c, error: null };
     }

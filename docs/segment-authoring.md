@@ -100,7 +100,42 @@ export const derivativesFilm: Segment[] = [
   `{ index, offset, name, subtitle, position }`,字幕文本顺手可断言。
   播放器运行时跳转:`controller.seekToTime(seconds)`。
 
-## 7. 收尾检查
+## 7. 要配音的分段:timedSegment
+
+打算配音的分段用 `timedSegment` 写:声明台词(稳定 id + 文本,可用 `<mark name="k"/>` 标出要对齐的词),
+脚本里用提示点踩时间,**不写 duration、不写字幕时间** —— 它们来自配音方交回的时间表;
+没有时间表时,影片加载时干跑一遍排出草稿时间。
+
+```ts
+import { Create, Indicate } from '../engine';
+import { timedSegment } from './film';
+
+export const slope = timedSegment(
+  {
+    id: 'slope', // 稳定 id,配音方按它交音频;改显示名不影响配音
+    name: '斜率',
+    lines: [
+      { id: 'slope-1', text: '先画出函数的图像。' },
+      { id: 'slope-2', text: '这条切线的斜率<mark name="k"/>,就是导数。' },
+    ],
+  },
+  async (env) => {
+    env.scene.add(graph, tangent, formula);
+    await env.play(new Create(graph));
+    await env.untilLine('slope-2'); // 等第二句开口
+    await env.play(new Create(tangent, { runTime: env.remaining('slope-2') * 0.4 }));
+    await env.untilMark('slope-2', 'k'); // 正好说到「斜率」
+    await env.play(new Indicate(formula));
+  },
+);
+```
+
+- 动画要赶在句中某个词之前完成时,用这句剩余时间的**比例**(如 `env.remaining(id) * 0.4`),或者干脆等那个标记;
+  不要写成「句尾减 0.8 秒」这种常数 —— 配音一慢,常数就不够了。
+- `node scripts/test.mjs voice` 跑配音相关的测试;`npm run voice:script -- <影片>` 看排出来的草稿时间与每个提示点前动画要多久。
+- 和配音方的协作流程、时间表格式见 [voice.md](voice.md)。
+
+## 8. 收尾检查
 
 ```bash
 node scripts/test.mjs content  # 时长与字幕

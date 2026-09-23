@@ -85,4 +85,18 @@ export default suite('导出输出', [
       ok(COMPOSITE_MIN_INTERVAL_MS < 1000 / 30, '留出抖动余量');
     },
   ],
+  [
+    '带配音时自动候选改成带 Opus 的 WebM(mp4 仍然优先);显式指定的格式不受影响',
+    () => {
+      equal(pickMimeType(undefined, () => true, { audio: true }).mimeType, 'video/mp4');
+      const webmOnly = (t: string): boolean => t.startsWith('video/webm');
+      equal(pickMimeType(undefined, webmOnly, { audio: true }).mimeType, 'video/webm;codecs=vp9,opus');
+      equal(pickMimeType(undefined, webmOnly).mimeType, 'video/webm;codecs=vp9', '不带配音时候选不变');
+      const noVp9 = (t: string): boolean => t === 'video/webm;codecs=vp8,opus' || t === 'video/webm';
+      equal(pickMimeType(undefined, noVp9, { audio: true }).mimeType, 'video/webm;codecs=vp8,opus');
+      equal(pickMimeType(undefined, (t) => t === 'video/webm', { audio: true }).mimeType, 'video/webm');
+      equal(pickMimeType('video/webm', () => true, { audio: true }).mimeType, 'video/webm', '显式格式原样用');
+      equal(pickMimeType('video/webm', () => false, { audio: true }).error, 'unsupported-mime');
+    },
+  ],
 ]);

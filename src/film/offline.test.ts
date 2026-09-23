@@ -1,3 +1,4 @@
+import type { AudioLoader, DecodedAudio } from '../audio/types';
 import { Circle } from '../engine';
 import type { SceneViewport } from '../engine';
 import type { EncoderRequest, VideoEncoderSink } from '../export/encoder';
@@ -13,6 +14,12 @@ import { directedSegment, isFilmError, runFilm } from './film';
 import { ManualClock } from './offline';
 import { pythagorasFilm } from './program';
 
+/** 假编码端收到的一块音频(拷贝)。 */
+interface AudioChunk {
+  timestamp: number;
+  planes: Float32Array[];
+}
+
 /** 假编码端的记录。 */
 interface EncoderLog {
   requests: EncoderRequest[];
@@ -22,6 +29,10 @@ interface EncoderLog {
   marks: number[];
   finished: number;
   cancelled: number;
+  /** 收到的音频块(按收到的顺序)。 */
+  audio: AudioChunk[];
+  /** 视频帧与音频块交错的顺序:'v' 一帧、'a' 一块。 */
+  order: string[];
 }
 
 interface FakeEnvOptions {
@@ -35,6 +46,10 @@ interface FakeEnvOptions {
   texts?: Set<string>;
   /** 导出画布的 drawImage 一律抛错(合成失败)。 */
   failComposite?: boolean;
+  /** 注入的配音解码(OfflineEnv.audio);不给就是环境解不了音频。 */
+  audioLoader?: AudioLoader;
+  /** 请求了音频时编码端报告的音频编码;null 表示编不了音频(成片无声)。缺省 'fake-aac'。 */
+  audioCodec?: string | null;
 }
 
 interface FakeEnv {
@@ -54,6 +69,8 @@ function fakeEnv(o: FakeEnvOptions = {}): FakeEnv {
     marks: [],
     finished: 0,
     cancelled: 0,
+    audio: [],
+    order: [],
   };
   const canvases: HTMLCanvasElement[] = [];
   let outputCalls: FakeCtxCall[] = [];
@@ -89,9 +106,11 @@ function fakeEnv(o: FakeEnvOptions = {}): FakeEnv {
       if (o.unsupported) {
         return null;
       }
+      const audioCodec = req.audio ? (o.audioCodec === undefined ? 'fake-aac' : o.audioCodec) : null;
       const sink: VideoEncoderSink = {
         mimeType: req.mimeType?.startsWith('video/webm') ? 'video/webm' : 'video/mp4',
         codec: 'fake',
+        audio: audioCodec ? { codec: audioCodec } : null,
         addFrame: async (timestamp, duration) => {
           if (o.failAt !== undefined && log.timestamps.length === o.failAt) {
             throw new Error('编码器罢工了');
@@ -99,6 +118,14 @@ function fakeEnv(o: FakeEnvOptions = {}): FakeEnv {
           log.timestamps.push(timestamp);
           log.durations.push(duration);
           log.marks.push(outputCalls.length);
+          log.order.push('v');
+        },
+        addAudio: async (planes, timestamp) => {
+          if (!audioCodec) {
+            throw new Error('没有音频轨却收到了音频');
+          }
+          log.audio.push({ timestamp, planes: planes.map((p) => Float32Array.from(p)) });
+          log.order.push('a');
         },
         finish: async () => {
           log.finished += 1;
@@ -111,8 +138,74 @@ function fakeEnv(o: FakeEnvOptions = {}): FakeEnv {
       return sink;
     },
     createYielder: () => ({ yieldTask: flushTasks, close: () => undefined }),
+    ...(o.audioLoader ? { audio: o.audioLoader } : {}),
   };
   return { env, log, output: () => outputCalls, canvases };
+}
+
+/** 假音频文件:秒数、声道、每个采样的值(按文件里的采样序号算);'fail' 表示取 / 解码失败。 */
+type FakeFile = { seconds: number; channels?: number; sampleRate?: number; value: (i: number, ch: number) => number } | 'fail';
+
+/** 假解码器:按地址给出合成的音频;记下每个地址被取了几次。delayTasks:解码要多等这么多个宏任务(模拟慢解码)。 */
+function fakeLoader(
+  files: Record<string, FakeFile>,
+  delayTasks = 0,
+): AudioLoader & { fetches: Map<string, number>; decoded: () => number } {
+  let decodedCount = 0;
+  const fetches = new Map<string, number>();
+  return {
+    fetches,
+    decoded: () => decodedCount,
+    fetch: async (url) => {
+      fetches.set(url, (fetches.get(url) ?? 0) + 1);
+      const file = files[url];
+      if (file === undefined || file === 'fail') {
+        throw new Error(`取不到 ${url}`);
+      }
+      return new TextEncoder().encode(url).buffer as ArrayBuffer;
+    },
+    decode: async (bytes) => {
+      for (let i = 0; i < delayTasks; i++) {
+        await flushTasks();
+      }
+      const url = new TextDecoder().decode(bytes);
+      const file = files[url];
+      if (file === undefined || file === 'fail') {
+        throw new Error(`解不开 ${url}`);
+      }
+      const sampleRate = file.sampleRate ?? 48000;
+      const channels = file.channels ?? 1;
+      const length = Math.round(file.seconds * sampleRate);
+      const data = Array.from({ length: channels }, (_, ch) => Float32Array.from({ length }, (_v, i) => file.value(i, ch)));
+      const decoded: DecodedAudio = {
+        sampleRate,
+        length,
+        numberOfChannels: channels,
+        duration: length / sampleRate,
+        getChannelData: (ch) => data[ch] ?? new Float32Array(length),
+      };
+      decodedCount += 1;
+      return decoded;
+    },
+  };
+}
+
+/** 带配音的分段:在 holdSegment 上挂音频片段。 */
+function voiced(segment: Segment, clips: Array<{ id: string; url: string; start: number; duration: number; offset?: number }>): Segment {
+  return { ...segment, voice: { clips: clips.map((c) => ({ ...c, offset: c.offset ?? 0 })) } };
+}
+
+/** 音频块拼成一整条(某个声道)。 */
+function joined(chunks: readonly AudioChunk[], ch = 0): Float32Array {
+  const total = chunks.reduce((n, c) => n + (c.planes[ch]?.length ?? 0), 0);
+  const out = new Float32Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    const plane = c.planes[ch] ?? new Float32Array(0);
+    out.set(plane, at);
+    at += plane.length;
+  }
+  return out;
 }
 
 /** 跟踪导出句柄的结局。 */
@@ -549,6 +642,241 @@ export default suite('离线导出', [
       ok(Math.abs(n / 30 - wall) < 0.5, `成片 ${(n / 30).toFixed(2)} 秒,时间线约 ${wall.toFixed(2)} 秒`);
       ok(texts.has('今天,我们证明勾股定理'), '片头字幕没有合成进成片');
       ok(texts.has('直角边平方之和,等于斜边平方'), '正片字幕没有合成进成片');
+      film.dispose();
+    },
+  ],
+  [
+    '配音:音轨一秒一块、首尾相接、正好铺满视频时长,跟着视频帧往前推(不是最后一次性写)',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.5, value: () => 0.25 } });
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const a = voiced(holdSegment('A', 1.2), [{ id: 'a', url: 'a.wav', start: 0.2, duration: 1 }]);
+      const { film } = preview([a, holdSegment('B', 1)], fe.env);
+      const outcome = track(film.exportVideo({ fps: 30 }));
+      await settle(outcome);
+      equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+      equal(fe.log.requests[0]?.audio?.sampleRate, 48000);
+      equal(fe.log.requests[0]?.audio?.numberOfChannels, 2);
+      const frames = fe.log.timestamps.length;
+      const total = Math.round((frames / 30) * 48000);
+      const chunks = fe.log.audio;
+      ok(chunks.length >= 3, `应有至少 3 块音频,实际 ${chunks.length}`);
+      let at = 0;
+      chunks.forEach((c, i) => {
+        equal(c.timestamp, at / 48000, `第 ${i} 块的时间戳不连续`);
+        equal(c.planes.length, 2, '应是两个声道');
+        const n = c.planes[0]?.length ?? 0;
+        equal(c.planes[1]?.length, n, '两个声道长度应相同');
+        ok(i === chunks.length - 1 ? n > 0 && n <= 48000 : n === 48000, `第 ${i} 块长度 ${n}`);
+        at += n;
+      });
+      equal(at, total, '音轨总长应正好等于视频时长(帧数 / 帧率)');
+      // 第 30 帧(视频走到 1 秒)之后才写第一块;最后一帧之前就已经写过音频。
+      equal(fe.log.order.indexOf('a'), 30, '第一块音频应在视频走满 1 秒时写入');
+      ok(fe.log.order.lastIndexOf('v') > fe.log.order.indexOf('a'), '音频应跟着视频帧往前推,而不是最后一次性写');
+      const left = joined(chunks, 0);
+      ok(left.some((v) => Math.abs(v - 0.25) < 1e-9), '配音没有混进音轨');
+      film.dispose();
+    },
+  ],
+  [
+    '配音落在分段实际起播的时刻(含转场,不是声明的起点);偏移与截断都对;单声道复制到两个声道',
+    async () => {
+      const loader = fakeLoader({ 'ramp.wav': { seconds: 1, value: (i) => (i / 48000) * 0.5 } });
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const b = voiced(holdSegment('B', 1), [{ id: 'l1', url: 'ramp.wav', start: 0.1, duration: 0.3, offset: 0.25 }]);
+      let bStart = Number.NaN;
+      const spyB: Segment = {
+        ...b,
+        play(canvas: HTMLCanvasElement, context?: SegmentContext): SegmentHandle {
+          // 导出实例的虚拟时钟从 1000ms 起步:挂载时刻就是 B 在成片里的起点。
+          if (context?.viewport && context.clock) {
+            bStart = (context.clock.now() - 1000) / 1000;
+          }
+          return b.play(canvas, context);
+        },
+      };
+      const { film } = preview([holdSegment('A', 0.5), spyB], fe.env, { transition: 0.2 });
+      const outcome = track(film.exportVideo());
+      await settle(outcome);
+      equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+      ok(bStart > 0.6, `B 应在 A 播完、淡出之后才起播(声明起点 0.5),实际 ${bStart}`);
+      const left = joined(fe.log.audio, 0);
+      const right = joined(fe.log.audio, 1);
+      const first = Math.round((bStart + 0.1) * 48000);
+      const end = Math.round((bStart + 0.4) * 48000);
+      ok(left.subarray(0, first).every((v) => v === 0), '片段开始之前应当是静音');
+      ok(Math.abs((left[first] ?? 0) - 0.125) < 1e-6, `片段起点应读到文件第 0.25 秒(0.125),实际 ${left[first]}`);
+      const lastIndex = 0.25 * 48000 + (end - 1 - first);
+      ok(
+        Math.abs((left[end - 1] ?? 0) - (lastIndex / 48000) * 0.5) < 1e-6,
+        `片段最后一个采样读错了位置:${left[end - 1]}`,
+      );
+      ok(left.subarray(end).every((v) => v === 0), '片段应在 0.3 秒处截断');
+      ok(left.every((v, i) => v === right[i]), '单声道配音应复制到两个声道');
+      film.dispose();
+    },
+  ],
+  [
+    'audio:false 不要音频轨;片子里没有配音也不要;环境解不了码时提示一次、照常出片',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.5, value: () => 0.3 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.5 }];
+      const off = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const first = preview([voiced(holdSegment('A', 0.5), clip)], off.env);
+      const o1 = track(first.film.exportVideo({ audio: false }));
+      await settle(o1);
+      equal(o1.state, 'resolved');
+      equal(off.log.requests[0]?.audio, undefined, 'audio:false 不该要音频轨');
+      equal(off.log.audio.length, 0);
+      equal(loader.fetches.size, 0, 'audio:false 不该去取音频');
+      first.film.dispose();
+
+      const silent = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const second = preview([holdSegment('A', 0.5)], silent.env);
+      const o2 = track(second.film.exportVideo());
+      await settle(o2);
+      equal(o2.state, 'resolved');
+      equal(silent.log.requests[0]?.audio, undefined, '没有配音的片子不该要音频轨');
+      second.film.dispose();
+
+      const warnings: unknown[] = [];
+      const { warn } = console;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args);
+      };
+      try {
+        const noLoader = fakeEnv({ recordOutput: false });
+        const third = preview([voiced(holdSegment('A', 0.5), clip)], noLoader.env);
+        const o3 = track(third.film.exportVideo());
+        await settle(o3);
+        equal(o3.state, 'resolved', '解不了码也要照常出片');
+        equal(noLoader.log.requests[0]?.audio, undefined);
+        third.film.dispose();
+      } finally {
+        console.warn = warn;
+      }
+      equal(warnings.length, 1, `应当提示一次成片没有配音,实际 ${warnings.length} 次`);
+    },
+  ],
+  [
+    '编码端编不了音频:照常出片、不写音频、提示一次;某个文件解码失败:那一段是静音,别的照常',
+    async () => {
+      const warnings: unknown[] = [];
+      const { warn } = console;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args);
+      };
+      try {
+        const loader = fakeLoader({ 'a.wav': { seconds: 0.5, value: () => 0.3 } });
+        const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: null });
+        const { film } = preview([voiced(holdSegment('A', 0.5), [{ id: 'a', url: 'a.wav', start: 0, duration: 0.5 }])], fe.env);
+        const outcome = track(film.exportVideo());
+        await settle(outcome);
+        equal(outcome.state, 'resolved', `编码端编不了音频也要照常出片:${outcome.code}`);
+        ok(fe.log.requests[0]?.audio !== undefined, '应当向编码端要过音频轨');
+        equal(fe.log.audio.length, 0, '没有音频轨就不该写音频');
+        equal(warnings.length, 1, `应当提示一次成片没有配音,实际 ${warnings.length} 次`);
+        film.dispose();
+
+        warnings.length = 0;
+        const mixed = fakeLoader({ 'bad.wav': 'fail', 'good.wav': { seconds: 0.4, value: () => 0.5 } });
+        const fe2 = fakeEnv({ recordOutput: false, audioLoader: mixed });
+        const second = preview(
+          [
+            voiced(holdSegment('A', 1), [
+              { id: 'bad', url: 'bad.wav', start: 0, duration: 0.4 },
+              { id: 'good', url: 'good.wav', start: 0.5, duration: 0.4 },
+            ]),
+          ],
+          fe2.env,
+        );
+        const o2 = track(second.film.exportVideo());
+        await settle(o2);
+        equal(o2.state, 'resolved', `解码失败不该让导出失败:${o2.code}`);
+        const left = joined(fe2.log.audio, 0);
+        ok(left.subarray(0, Math.round(0.4 * 48000)).every((v) => v === 0), '解不开的那一段应是静音');
+        ok(Math.abs((left[Math.round(0.6 * 48000)] ?? 0) - 0.5) < 1e-9, '能解开的那一段照常混进去');
+        ok(warnings.length >= 1, '解码失败应当提示');
+        second.film.dispose();
+      } finally {
+        console.warn = warn;
+      }
+    },
+  ],
+  [
+    '慢解码:写到那一块之前先等与它重叠的片段解完,不会漏掉声音',
+    async () => {
+      // 解码要等 200 个宏任务,远长于写第一块之前那 30 帧。
+      const loader = fakeLoader({ 'slow.wav': { seconds: 0.5, value: () => 0.4 } }, 200);
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const { film } = preview([voiced(holdSegment('A', 1.5), [{ id: 's', url: 'slow.wav', start: 0.1, duration: 0.5 }])], fe.env);
+      const outcome = track(film.exportVideo());
+      await settle(outcome, 20000);
+      equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+      equal(loader.decoded(), 1);
+      const left = joined(fe.log.audio, 0);
+      // Float32 存 0.4 是 0.40000000596…,容差按单精度给。
+      ok(Math.abs((left[Math.round(0.3 * 48000)] ?? 0) - 0.4) < 1e-6, '慢解码的片段被漏掉了');
+      film.dispose();
+    },
+  ],
+  [
+    '分段一起播就开始取自己的音频,并顺手预加载下一段(解码与渲染并行,写到那一块时不用干等)',
+    async () => {
+      const loader = fakeLoader({
+        'first.wav': { seconds: 0.5, value: () => 0.2 },
+        'next.wav': { seconds: 0.5, value: () => 0.3 },
+      });
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const a = voiced(holdSegment('A', 1.5), [{ id: 'f', url: 'first.wav', start: 0.1, duration: 0.5 }]);
+      const b = voiced(holdSegment('B', 0.5), [{ id: 'n', url: 'next.wav', start: 0, duration: 0.5 }]);
+      const { film } = preview([a, b], fe.env);
+      const outcome = track(film.exportVideo());
+      for (let i = 0; i < 5; i++) {
+        await flushTasks();
+      }
+      equal(fe.log.audio.length, 0, '这时还没写到任何一块音频');
+      equal(loader.fetches.get('first.wav'), 1, '分段起播时就该开始取它的音频');
+      equal(loader.fetches.get('next.wav'), 1, '应当顺手预加载下一段的音频');
+      await settle(outcome);
+      equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+      equal(loader.fetches.get('next.wav'), 1, '预加载过的不该再取一次');
+      film.dispose();
+    },
+  ],
+  [
+    '同一个文件被几段用到只取一次;重叠的配音叠加后收在 ±1 之内',
+    async () => {
+      const loader = fakeLoader({
+        'x.wav': { seconds: 0.5, value: () => 0.7 },
+        'y.wav': { seconds: 0.5, value: () => 0.6 },
+      });
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      let cStart = Number.NaN;
+      const c = voiced(holdSegment('C', 0.5), [{ id: 'x2', url: 'x.wav', start: 0, duration: 0.5 }]);
+      const spyC: Segment = {
+        ...c,
+        play(canvas: HTMLCanvasElement, context?: SegmentContext): SegmentHandle {
+          if (context?.viewport && context.clock) {
+            cStart = (context.clock.now() - 1000) / 1000;
+          }
+          return c.play(canvas, context);
+        },
+      };
+      const a = voiced(holdSegment('A', 0.6), [
+        { id: 'x', url: 'x.wav', start: 0, duration: 0.5 },
+        { id: 'y', url: 'y.wav', start: 0, duration: 0.5 },
+      ]);
+      const { film } = preview([a, holdSegment('B', 0.5), spyC], fe.env);
+      const outcome = track(film.exportVideo());
+      await settle(outcome);
+      equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+      equal(loader.fetches.get('x.wav'), 1, '后面还要用的文件不该被还掉再重取');
+      const left = joined(fe.log.audio, 0);
+      equal(left[Math.round(0.25 * 48000)], 1, '0.7 + 0.6 叠加后应收到 1');
+      ok(left.every((v) => v <= 1 && v >= -1), '音轨不该超出 ±1');
+      ok(Math.abs((left[Math.round((cStart + 0.25) * 48000)] ?? 0) - 0.7) < 1e-6, '第三段再次用到的文件照样混进去');
       film.dispose();
     },
   ],

@@ -36,6 +36,8 @@ export interface ExportOptions {
    * 反映的是片内位置而不是墙钟,转场的淡入淡出不计入。回调抛错只记一次日志,不影响导出。
    */
   onProgress?: (filmSeconds: number, totalSeconds: number) => void;
+  /** 成片带不带配音,缺省带(片子里有配音时)。 */
+  audio?: boolean;
 }
 
 /** 导出句柄。 */

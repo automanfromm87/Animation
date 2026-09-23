@@ -56,6 +56,20 @@
       }
     },
     {
+      "files": ["src/audio/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              { "group": ["**/engine/**", "**/engine", "**/film/**", "**/scenes/**", "**/export/**", "**/sceneRegistry*", "**/App*"], "caseSensitive": true, "message": "audio 是底层(与 export 同级):只放播放、解码、混音,不依赖引擎 / 影片 / 场景 / 导出。" },
+              { "group": ["react", "react-dom", "react/**"], "message": "audio 不依赖 React。" }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["src/film/**"],
       "rules": {
         "no-restricted-imports": [

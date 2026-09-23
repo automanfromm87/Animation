@@ -15,6 +15,52 @@ export function fromFilm(controller: FilmController): SceneHandle {
     resize: () => undefined,
     exportVideo: (options) => controller.exportVideo(options),
     setPaused: (paused) => controller.setPaused(paused),
+    audioAvailable: () => controller.getState().audio.available,
+    setAudioEnabled: (enabled) => controller.setAudioEnabled(enabled),
+  };
+}
+
+/** 影片配音时间表的地址:public/voice/<影片>/timing.json(没有这个文件就是没配音)。 */
+export function voiceSheetUrl(voiceId: string): string {
+  const base = typeof import.meta.env?.BASE_URL === 'string' ? import.meta.env.BASE_URL : '/';
+  return `${base}voice/${voiceId}/timing.json`;
+}
+
+/** 只跑一次的异步加载(失败不缓存,下次重试)。 */
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | null = null;
+  return () => {
+    cached ??= load().catch((e: unknown) => {
+      cached = null;
+      throw e;
+    });
+    return cached;
+  };
+}
+
+/**
+ * 影片条目:加载内容 → 配音准备(有时间表就按它定时长、字幕、音频;timedSegment 没有时间表时排草稿)
+ * → 挂播放器。单帧预览用同一份准备好的分段:时间表可能改了时长,两边的时间轴必须一致。
+ */
+function filmEntry(
+  title: string,
+  voiceId: string,
+  loadContent: () => Promise<readonly Segment[]>,
+): SceneEntry & { readonly kind: 'film'; readonly preview: NonNullable<SceneEntry['preview']> } {
+  const prepared = once(async (): Promise<readonly Segment[]> => {
+    const [{ prepareVoice }, segments] = await Promise.all([import('./film/film'), loadContent()]);
+    return (await prepareVoice(segments, { sheetUrl: voiceSheetUrl(voiceId) })).segments;
+  });
+  return {
+    title,
+    kind: 'film',
+    interactive: false,
+    load: async () => {
+      const [{ runFilm }, segments] = await Promise.all([import('./film/film'), prepared()]);
+      return (canvas, hooks) =>
+        fromFilm(runFilm(canvas, segments, { onPausedChange: hooks.onPausedChange }));
+    },
+    preview: filmPreview(prepared),
   };
 }
 
@@ -48,48 +94,10 @@ export const SCENES = {
       return (canvas) => runVocabularyScene(canvas);
     },
   },
-  film: {
-    title: '勾股定理短片',
-    kind: 'film',
-    interactive: false,
-    load: async () => {
-      const [{ runFilm }, { pythagorasFilm }] = await Promise.all([
-        import('./film/film'),
-        import('./film/program'),
-      ]);
-      return (canvas, hooks) =>
-        fromFilm(runFilm(canvas, pythagorasFilm, { onPausedChange: hooks.onPausedChange }));
-    },
-    preview: filmPreview(async () => (await import('./film/program')).pythagorasFilm),
-  },
-  derivatives: {
-    title: '导数长片',
-    kind: 'film',
-    interactive: false,
-    load: async () => {
-      const [{ runFilm }, { derivativesFilm }] = await Promise.all([
-        import('./film/film'),
-        import('./film/derivatives'),
-      ]);
-      return (canvas, hooks) =>
-        fromFilm(runFilm(canvas, derivativesFilm, { onPausedChange: hooks.onPausedChange }));
-    },
-    preview: filmPreview(async () => (await import('./film/derivatives')).derivativesFilm),
-  },
-  topology: {
-    title: '拓扑学基础',
-    kind: 'film',
-    interactive: false,
-    load: async () => {
-      const [{ runFilm }, { topologyFilm }] = await Promise.all([
-        import('./film/film'),
-        import('./film/topology'),
-      ]);
-      return (canvas, hooks) =>
-        fromFilm(runFilm(canvas, topologyFilm, { onPausedChange: hooks.onPausedChange }));
-    },
-    preview: filmPreview(async () => (await import('./film/topology')).topologyFilm),
-  },
+  film: filmEntry('勾股定理短片', 'film', async () => (await import('./film/program')).pythagorasFilm),
+  derivatives: filmEntry('导数长片', 'derivatives', async () => (await import('./film/derivatives')).derivativesFilm),
+  topology: filmEntry('拓扑学基础', 'topology', async () => (await import('./film/topology')).topologyFilm),
+  voicedemo: filmEntry('配音演示', 'voice-demo', async () => (await import('./film/voiceDemo')).voiceDemoFilm),
 } as const satisfies Readonly<Record<string, SceneEntry>>;
 
 export type SceneId = keyof typeof SCENES;

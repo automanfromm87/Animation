@@ -86,6 +86,8 @@ export interface ExportRecorderInit {
    * loop:false 的片子必须在这一刻就知道「已经不在导出了」,片尾才会停。
    */
   onFinish?: (recorder: ExportRecorder) => void;
+  /** 配音音轨(播放器的声音接出来的):并进录制的媒体流,成片带声音。没有就只录画面。 */
+  audioTrack?: MediaStreamTrack | null;
 }
 
 /** 连续这么多帧合成失败就放弃,而不是整段录坏帧还硬交付。 */
@@ -93,6 +95,7 @@ export const MAX_FRAME_ERRORS = 30;
 /** timeslice:每秒交一次数据块,看门狗据此判断断供。 */
 const TIMESLICE_MS = 1000;
 const VIDEO_BITS_PER_SECOND = 8_000_000;
+const AUDIO_BITS_PER_SECOND = 128_000;
 
 type RecorderStage = 'armed' | 'recording' | 'stopping' | 'finished';
 
@@ -146,7 +149,10 @@ export class ExportRecorder {
     }
     this.env = env;
     const requested = init.options?.mimeType;
-    const picked = pickMimeType(requested, (t) => env.MediaRecorder.isTypeSupported(t));
+    const audioTrack = init.audioTrack ?? null;
+    const picked = pickMimeType(requested, (t) => env.MediaRecorder.isTypeSupported(t), {
+      audio: audioTrack !== null,
+    });
     if (picked.error === 'unsupported-mime') {
       throw new FilmError('unsupported-mime', `当前浏览器不支持导出 ${requested ?? ''}`);
     }
@@ -177,11 +183,22 @@ export class ExportRecorder {
     ctx.fillRect(0, 0, size.width, size.height);
     let stream: MediaStream;
     let recorder: MediaRecorder;
+    let withAudio = false;
     try {
       stream = out.captureStream(CAPTURE_FPS);
+      // 配音音轨并进同一条流:MediaRecorder 把画面和声音一起编进成片。
+      if (audioTrack) {
+        if (typeof stream.addTrack === 'function') {
+          stream.addTrack(audioTrack);
+          withAudio = true;
+        } else {
+          console.warn('[export] 捕获流不能加音轨,成片没有配音');
+        }
+      }
       recorder = new env.MediaRecorder(stream, {
         mimeType: picked.mimeType,
         videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
+        ...(withAudio ? { audioBitsPerSecond: AUDIO_BITS_PER_SECOND } : {}),
       });
     } catch (e) {
       // captureStream / MediaRecorder 构造是同步抛的,不能让它逃出 exportVideo。
@@ -448,6 +465,10 @@ export class ExportRecorder {
 
   private release(): void {
     for (const t of this.stream.getTracks()) {
+      // 配音音轨归播放器管(它的声音照常在放),只停我们自己捕获出来的轨道。
+      if (t === this.init.audioTrack) {
+        continue;
+      }
       try {
         t.stop();
       } catch {

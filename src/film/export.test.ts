@@ -1,3 +1,4 @@
+import type { LiveAudioContext, LiveAudioEnv } from '../audio/live';
 import { installDomStub } from '../testing/domStub';
 import type { DomStub, StubCanvas } from '../testing/domStub';
 import { installExportStub, installResizeObserverStub } from '../testing/exportStub';
@@ -109,6 +110,65 @@ function track(handle: ExportHandle): Outcome {
 }
 
 const instant: FilmOptions = { transition: 0, loop: false };
+
+/** 假的 Web Audio 播放环境:能建上下文、能把声音接出一条录制音轨;记下音轨被停、录制节点被断开的次数。 */
+function fakeLiveAudio(): { env: LiveAudioEnv; track: MediaStreamTrack; trackStops(): number; disconnected(): number } {
+  let trackStops = 0;
+  let disconnected = 0;
+  const audioTrack = {
+    kind: 'audio',
+    stop: () => {
+      trackStops += 1;
+    },
+  } as unknown as MediaStreamTrack;
+  const destination = { stream: { getAudioTracks: () => [audioTrack] } as unknown as MediaStream };
+  const ctx: LiveAudioContext = {
+    currentTime: 0,
+    state: 'running',
+    destination: {},
+    resume: () => Promise.resolve(),
+    suspend: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+    createBufferSource: () => ({
+      buffer: null,
+      onended: null,
+      connect: () => undefined,
+      disconnect: () => undefined,
+      start: () => undefined,
+      stop: () => undefined,
+    }),
+    createGain: () => ({
+      gain: { value: 1 },
+      connect: () => undefined,
+      disconnect: (node?: unknown) => {
+        if (node === destination) {
+          disconnected += 1;
+        }
+      },
+    }),
+    decodeAudioData: () => Promise.reject(new Error('测试里不解码')),
+    createMediaStreamDestination: () => destination,
+  };
+  return {
+    env: {
+      createContext: () => ctx,
+      // 永远不回:测试里不真播声音,也不产生加载失败的告警。
+      fetch: () => new Promise<ArrayBuffer>(() => undefined),
+      hidden: () => false,
+      onVisibilityChange: () => () => undefined,
+    },
+    track: audioTrack,
+    trackStops: () => trackStops,
+    disconnected: () => disconnected,
+  };
+}
+
+/** 带一段配音的探针分段。 */
+function voicedProbe(name: string): Probe {
+  return probe(name, [], 1, {
+    voice: { clips: [{ id: `${name}/1`, url: `${name}.wav`, start: 0, duration: 1, offset: 0 }] },
+  });
+}
 
 export default suite('导出', [
   [
@@ -708,6 +768,44 @@ export default suite('导出', [
           equal(out.state, 'resolved', `第 0 段坏掉时导出没收尾:${out.message}`);
           film();
         });
+      }),
+  ],
+  [
+    '实时录制带配音:播放器的配音音轨并进录制的媒体流(带音频码率);收尾后断开录制音轨,但不停掉它',
+    () =>
+      withExportStub(async ({ dom, ex, canvas }) => {
+        const audio = fakeLiveAudio();
+        const seg = voicedProbe('A');
+        const film = runFilm(canvas, [seg], { ...instant, audio: { env: audio.env } });
+        await run(dom, 4);
+        equal(film.getState().audio.available, true);
+        const out = track(film.exportVideo({ mode: 'realtime' }));
+        ok(ex.streamTracks().includes(audio.track), '配音音轨没有并进录制的媒体流');
+        equal(ex.recorderOptions()[0]?.['audioBitsPerSecond'], 128_000, '带配音时录制器应设音频码率');
+        equal(film.getState().audio.enabled, true, '导出按钮的点击顺带打开声音');
+        await run(dom, 30);
+        seg.finish();
+        await run(dom, 6);
+        equal(out.state, 'resolved', `导出没有交付:${out.message}`);
+        equal(audio.trackStops(), 0, '配音音轨归播放器管,录制器不该停它');
+        ok(audio.disconnected() >= 1, '收尾后应断开录制用的音轨');
+        film();
+      }),
+  ],
+  [
+    '实时录制 audio:false:不接配音音轨,录制器不设音频码率',
+    () =>
+      withExportStub(async ({ dom, ex, canvas }) => {
+        const audio = fakeLiveAudio();
+        const seg = voicedProbe('A');
+        const film = runFilm(canvas, [seg], { ...instant, audio: { env: audio.env } });
+        await run(dom, 4);
+        const out = track(film.exportVideo({ mode: 'realtime', audio: false }));
+        ok(!ex.streamTracks().includes(audio.track), 'audio:false 不该接配音音轨');
+        equal(ex.recorderOptions()[0]?.['audioBitsPerSecond'], undefined);
+        film();
+        await dom.flush();
+        equal(out.code, 'disposed');
       }),
   ],
 ]);

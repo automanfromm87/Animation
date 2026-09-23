@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mini-manim.dev/schemas/voice-timing.schema.json",
+  "title": "配音时间表",
+  "description": "外部配音方交付的时间数据:每段时长、每句台词的起止、句中标记的时刻与音频文件。时间一律是秒,相对各自分段的开头。放在 public/voice/<影片>/timing.json;说明见 docs/voice.md。跨字段的约束(句子按顺序、不重叠、不超过本段时长)由 npm run voice:check 检查。",
+  "type": "object",
+  "required": ["segments"],
+  "properties": {
+    "version": {
+      "description": "格式版本,目前是 1。",
+      "const": 1
+    },
+    "film": {
+      "description": "影片名(与台词稿的 film 一致,如 voice-demo)。",
+      "type": "string"
+    },
+    "locale": {
+      "description": "语种(可选),如 zh-CN。",
+      "type": "string"
+    },
+    "segments": {
+      "description": "各分段的时间。id 与台词稿对上;顺序无所谓。",
+      "type": "array",
+      "items": { "$ref": "#/$defs/segment" }
+    }
+  },
+  "$defs": {
+    "audioRef": {
+      "description": "音频文件:相对 timing.json 的路径(或完整网址);一个长文件管好几段时写成 { file, offset },offset 是从文件的第几秒开始读。",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "required": ["file"],
+          "properties": {
+            "file": { "type": "string", "minLength": 1 },
+            "offset": { "type": "number", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "segment": {
+      "type": "object",
+      "required": ["id", "duration"],
+      "properties": {
+        "id": {
+          "description": "分段 id(台词稿的 segments[].id)。",
+          "type": "string",
+          "minLength": 1
+        },
+        "duration": {
+          "description": "本段时长(秒)。timed 段由配音方决定(但要满足台词稿里的动画需要);fixed 段必须等于台词稿给的动画时长。",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "audio": {
+          "description": "整段一个音频(可选):从本段开头播。",
+          "$ref": "#/$defs/audioRef"
+        },
+        "lines": {
+          "description": "每句台词的时间,按开口时刻排序、互不重叠。",
+          "type": "array",
+          "items": { "$ref": "#/$defs/line" }
+        }
+      }
+    },
+    "line": {
+      "type": "object",
+      "required": ["id", "start", "end"],
+      "properties": {
+        "id": {
+          "description": "台词 id(台词稿的 lines[].id)。",
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "description": "录音时用的台词(可选,原样抄台词稿的 text):和当前稿子不一样时校验会提示重做。",
+          "type": "string"
+        },
+        "start": {
+          "description": "开口时刻(秒,相对本段开头)。0 ≤ start < end ≤ duration。",
+          "type": "number",
+          "minimum": 0
+        },
+        "end": {
+          "description": "说完的时刻(秒,相对本段开头):决定字幕什么时候消失;声音照样播到文件结束。",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "audio": {
+          "description": "这句的音频(可选):从 start 开始播。",
+          "$ref": "#/$defs/audioRef"
+        },
+        "marks": {
+          "description": "句中标记的时刻(秒,相对本段开头),键是台词里 <mark name=\"…\"/> 的名字;要落在这句的 [start, end] 里。",
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

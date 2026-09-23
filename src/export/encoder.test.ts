@@ -1,6 +1,6 @@
 import { createStubCanvas } from '../testing/domStub';
 import { equal, ok, suite } from '../testing/harness';
-import { containersFor, mediabunnyEncoder, probeEncodableContainers, webCodecsAvailable } from './encoder';
+import { audioCodecCandidates, containersFor, mediabunnyEncoder, probeEncodableContainers, webCodecsAvailable } from './encoder';
 
 export default suite('离线编码端', [
   [
@@ -24,6 +24,15 @@ export default suite('离线编码端', [
       // 编不了的容器不加载编码库;能识别的容器真去加载 mediabunny 并探测(按需加载的路径得真能走通)。
       equal(await mediabunnyEncoder({ ...req, mimeType: 'video/ogg' }), null);
       equal(await mediabunnyEncoder(req), null);
+    },
+  ],
+  [
+    '音频编码候选:mp4 先 AAC 后 Opus,webm 先 Opus 后 Vorbis;只留容器装得下的',
+    () => {
+      equal(audioCodecCandidates('mp4', ['aac', 'opus', 'mp3']).join(','), 'aac,opus');
+      equal(audioCodecCandidates('mp4', ['opus']).join(','), 'opus');
+      equal(audioCodecCandidates('webm', ['vorbis', 'opus']).join(','), 'opus,vorbis');
+      equal(audioCodecCandidates('webm', ['aac']).length, 0, '容器装不下就一个都不试');
     },
   ],
 ]);

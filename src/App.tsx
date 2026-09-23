@@ -84,6 +84,10 @@ function App() {
   const announcedRef = useRef(-1);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  /** 场景有配音(有才显示声音开关)。 */
+  const [audioAvailable, setAudioAvailable] = useState(false);
+  /** 声音开着。浏览器要求第一次出声发生在用户操作里,所以默认关着,由用户点开。 */
+  const [audioOn, setAudioOn] = useState(false);
   // 场景重挂载(StrictMode / HMR)后新句柄要接上当前的暂停态,
   // 又不想把 paused 放进挂载 effect 的依赖里(那会重建整个场景)。
   const pausedRef = useRef(false);
@@ -136,6 +140,8 @@ function App() {
         }
         handleRef.current = handle;
         setExportable(typeof handle.exportVideo === 'function');
+        setAudioAvailable(handle.audioAvailable?.() === true);
+        setAudioOn(false);
         handle.setPaused?.(pausedRef.current);
         // 画幅切换只改 .frame 的 CSS 尺寸,不会触发 window resize,必须观察 canvas 自身。
         if (typeof ResizeObserver !== 'undefined') {
@@ -158,6 +164,7 @@ function App() {
       handle?.dispose();
       handleRef.current = null;
       setExportable(false);
+      setAudioAvailable(false);
       setExportPct(null);
       setExportMode(null);
     };
@@ -238,6 +245,10 @@ function App() {
     });
     exportRef.current = handle;
     setExportMode(handle.mode);
+    // 实时录制跟着播放录一遍,播放器会顺便打开声音(把配音录进去):按钮状态跟上。
+    if (handle.mode === 'realtime' && audioAvailable) {
+      setAudioOn(true);
+    }
     // 离线是逐帧渲染(快慢与播放无关、可切到后台),实时是跟着播放录一遍。
     setExportStatus(handle.mode === 'offline' ? '开始渲染视频' : '开始导出');
     handle.done
@@ -283,6 +294,13 @@ function App() {
       // 双击「导出」的第二下会落在同一位置的「取消」上:只认单击。
       cancelExport();
     }
+  };
+
+  // 必须在点击回调里同步调用:浏览器只允许用户操作之后开始出声。
+  const toggleAudio = (): void => {
+    const next = !audioOn;
+    handleRef.current?.setAudioEnabled?.(next);
+    setAudioOn(next);
   };
 
   const togglePaused = (): void => {
@@ -351,6 +369,16 @@ function App() {
               >
                 {paused ? '播放' : '暂停'}
               </button>
+              {audioAvailable && (
+                <button
+                  type="button"
+                  aria-label={audioOn ? '关闭配音' : '开启配音'}
+                  disabled={lockPreview}
+                  onClick={toggleAudio}
+                >
+                  {audioOn ? '关闭声音' : '开启声音'}
+                </button>
+              )}
             </div>
           )}
           {canExport && (

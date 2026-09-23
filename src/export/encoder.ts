@@ -1,4 +1,4 @@
-import type { VideoCodec } from 'mediabunny';
+import type { AudioCodec, VideoCodec } from 'mediabunny';
 
 /**
  * 离线导出的视频编码端:把编码画布的当前内容按给定时间戳编成一帧,收尾交出成片。
@@ -9,8 +9,15 @@ export interface VideoEncoderSink {
   readonly mimeType: string;
   /** 实际选用的编码(如 'avc'),诊断用。 */
   readonly codec: string;
+  /** 音频轨(请求了音频、浏览器也编得了时);null 表示成片没有声音。 */
+  readonly audio: { readonly codec: string } | null;
   /** 把画布当前内容编成一帧(秒)。返回的 Promise 用来施加编码器背压:await 它再画下一帧。 */
   addFrame(timestamp: number, duration: number): Promise<void>;
+  /**
+   * 追加一块音频:平面 f32(每声道一个 Float32Array,长度相同),timestamp 是这块开头的时刻(秒)。
+   * 块要按时间顺序、首尾相接地加;没有音频轨(audio 为 null)时是空操作。
+   */
+  addAudio(planes: readonly Float32Array[], timestamp: number): Promise<void>;
   /** 收尾并交出成片。 */
   finish(): Promise<Blob>;
   /** 放弃:释放编码器,不交成片。 */
@@ -25,6 +32,8 @@ export interface EncoderRequest {
   fps: number;
   /** 指定容器('video/mp4' / 'video/webm',可带 codecs 参数);缺省自动选(mp4 优先)。 */
   mimeType?: string;
+  /** 要音频轨时给出采样率与声道数;不给就只有视频。 */
+  audio?: { readonly sampleRate: number; readonly numberOfChannels: number };
 }
 
 /** 编码端工厂:当前环境编不了请求的容器时返回 null(调用方据此回退实时录制或报 unsupported-mime)。 */
@@ -35,13 +44,24 @@ export function webCodecsAvailable(): boolean {
   return typeof VideoEncoder !== 'undefined';
 }
 
-type Container = 'mp4' | 'webm';
+export type Container = 'mp4' | 'webm';
 
 /** 每种容器按兼容性排的候选编码:mp4 首选 H.264(几乎所有播放器都能放),webm 首选 VP9。 */
 const CODECS: Readonly<Record<Container, readonly VideoCodec[]>> = {
   mp4: ['avc', 'hevc', 'av1', 'vp9'],
   webm: ['vp9', 'vp8', 'av1'],
 };
+
+/** 每种容器按兼容性排的候选音频编码:mp4 首选 AAC,webm 首选 Opus。 */
+const AUDIO_CODECS: Readonly<Record<Container, readonly AudioCodec[]>> = {
+  mp4: ['aac', 'opus'],
+  webm: ['opus', 'vorbis'],
+};
+
+/** 容器装得下的候选音频编码(按兼容性排序;supported 是容器格式报告的可装编码)。 */
+export function audioCodecCandidates(container: Container, supported: readonly string[]): AudioCodec[] {
+  return AUDIO_CODECS[container].filter((c) => supported.includes(c));
+}
 
 /** 请求的 mimeType → 按顺序尝试的容器。缺省自动时 mp4 优先。 */
 export function containersFor(mimeType: string | undefined): Container[] {
@@ -69,12 +89,15 @@ export const mediabunnyEncoder: EncoderFactory = async (req) => {
     return null;
   }
   const {
+    AudioSample,
+    AudioSampleSource,
     BufferTarget,
     CanvasSource,
     Mp4OutputFormat,
     Output,
     Quality,
     WebMOutputFormat,
+    getFirstEncodableAudioCodec,
     getFirstEncodableVideoCodec,
   } = await import('mediabunny');
   for (const container of containers) {
@@ -96,6 +119,28 @@ export const mediabunnyEncoder: EncoderFactory = async (req) => {
       keyFrameInterval: 2,
     });
     output.addVideoTrack(source, { frameRate: req.fps });
+    // 音频轨必须在 start() 之前加。编不了就没有音频轨:成片无声,视频照常(由调用方提示)。
+    const audioReq = req.audio;
+    let audioCodec: AudioCodec | null = null;
+    let audioSource: InstanceType<typeof AudioSampleSource> | null = null;
+    if (audioReq) {
+      const candidates = audioCodecCandidates(container, format.getSupportedAudioCodecs());
+      try {
+        audioCodec =
+          candidates.length > 0
+            ? await getFirstEncodableAudioCodec(candidates, {
+                numberOfChannels: audioReq.numberOfChannels,
+                sampleRate: audioReq.sampleRate,
+              })
+            : null;
+      } catch {
+        audioCodec = null;
+      }
+      if (audioCodec) {
+        audioSource = new AudioSampleSource({ codec: audioCodec, quality: new Quality('high') });
+        output.addAudioTrack(audioSource);
+      }
+    }
     try {
       await output.start();
     } catch (e) {
@@ -106,7 +151,29 @@ export const mediabunnyEncoder: EncoderFactory = async (req) => {
     return {
       mimeType,
       codec,
+      audio: audioCodec ? { codec: audioCodec } : null,
       addFrame: (timestamp, duration) => source.add(timestamp, duration),
+      addAudio: async (planes, timestamp) => {
+        const frames = planes[0]?.length ?? 0;
+        if (!audioSource || !audioReq || frames === 0) {
+          return;
+        }
+        // 平面格式:各声道首尾相接放进一块内存。
+        const data = new Float32Array(frames * planes.length);
+        planes.forEach((plane, ch) => data.set(plane.subarray(0, frames), ch * frames));
+        const sample = new AudioSample({
+          data,
+          format: 'f32-planar',
+          numberOfChannels: planes.length,
+          sampleRate: audioReq.sampleRate,
+          timestamp,
+        });
+        try {
+          await audioSource.add(sample);
+        } finally {
+          sample.close();
+        }
+      },
       finish: async () => {
         await output.finalize();
         const buffer = target.buffer;

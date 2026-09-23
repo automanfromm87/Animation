@@ -52,6 +52,10 @@ export interface ExportStub {
   setTrack(state: { muted?: boolean; readyState?: 'live' | 'ended' }): void;
   /** 捕获轨道被 stop 的次数。 */
   tracksStopped(): number;
+  /** 最近一次 captureStream 出来的流里现有的轨道(含加进去的配音音轨)。 */
+  streamTracks(): unknown[];
+  /** 每次建 MediaRecorder 时收到的选项(按创建顺序)。 */
+  recorderOptions(): Array<Record<string, unknown>>;
   /** 导出画布有没有被摘掉。 */
   exportCanvasRemoved(): boolean;
   /** 导出画布上的绘制记录。 */
@@ -85,6 +89,8 @@ export interface ExportStubOptions {
   recorderMimeType?: string;
   /** 捕获流是否提供 getVideoTracks / active(缺省不提供,贴近「拿不到」的环境)。 */
   exposeTrack?: boolean;
+  /** 捕获流没有 addTrack(加不了配音音轨的环境)。 */
+  noAddTrack?: boolean;
 }
 
 type Listener = (e: unknown) => void;
@@ -122,6 +128,9 @@ function buildExportFakes(options?: ExportStubOptions): ExportFakes {
   };
   /** 正在录制的编码器(emitChunk / fireRecorderError 发给它们)。 */
   const liveRecorders = new Set<StubRecorder>();
+  /** 最近一次捕获流的轨道表;每次建录制器时的选项。 */
+  let lastStreamTracks: unknown[] = [];
+  const recorderOptions: Array<Record<string, unknown>> = [];
   /** asyncStop 时已 stop、等待交付 onstop 的收尾动作。 */
   let pendingStops: Array<() => void> = [];
 
@@ -222,15 +231,23 @@ function buildExportFakes(options?: ExportStubOptions): ExportFakes {
         }).ctx;
       el['captureStream'] = () => {
         captured = true;
-        const stream: Record<string, unknown> = {
-          getTracks: () => [
-            {
-              stop: () => {
-                tracksStopped += 1;
-              },
+        const tracks: unknown[] = [
+          {
+            kind: 'video',
+            stop: () => {
+              tracksStopped += 1;
             },
-          ],
+          },
+        ];
+        lastStreamTracks = tracks;
+        const stream: Record<string, unknown> = {
+          getTracks: () => [...tracks],
         };
+        if (!options?.noAddTrack) {
+          stream['addTrack'] = (t: unknown) => {
+            tracks.push(t);
+          };
+        }
         if (options?.exposeTrack) {
           stream['getVideoTracks'] = () => [track];
           Object.defineProperty(stream, 'active', {
@@ -255,6 +272,7 @@ function buildExportFakes(options?: ExportStubOptions): ExportFakes {
     onerror: ((e: unknown) => void) | null = null;
     constructor(_stream: unknown, o: { mimeType: string }) {
       this.mimeType = options?.recorderMimeType ?? o.mimeType;
+      recorderOptions.push({ ...o });
     }
     start(): void {
       starts += 1;
@@ -344,6 +362,8 @@ function buildExportFakes(options?: ExportStubOptions): ExportFakes {
       }
     },
     tracksStopped: () => tracksStopped,
+    streamTracks: () => [...lastStreamTracks],
+    recorderOptions: () => recorderOptions.map((o) => ({ ...o })),
     exportCanvasRemoved: () => exportCanvasRemoved,
     exportOps: () => [...exportOps],
     deliverStops() {
