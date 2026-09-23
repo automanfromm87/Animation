@@ -1,0 +1,36 @@
+{
+  "name": "mini-manim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Manim 风格的 2D/3D 数学动画引擎:Canvas 2D 渲染(KaTeX 公式栅格化进画布)+ 影片播放器 + 视频导出",
+  "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "lint": "oxlint --deny-warnings && node scripts/check-imports.mjs",
+    "test": "node scripts/test.mjs",
+    "test:runner": "node scripts/selftest.mjs",
+    "bench": "node scripts/bench.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run test:runner",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "mathjax-full": "^3.2.2",
+    "mediabunny": "^1.59.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}

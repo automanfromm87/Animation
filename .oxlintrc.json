@@ -1,0 +1,92 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc", "import", "jsx-a11y"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "no-shadow": "error",
+    "eqeqeq": "error",
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "import/no-cycle": "error",
+    "typescript/await-thenable": "off",
+    "typescript/no-array-delete": "off",
+    "typescript/no-base-to-string": "off",
+    "typescript/no-duplicate-type-constituents": "off",
+    "typescript/no-floating-promises": "off",
+    "typescript/no-implied-eval": "off",
+    "typescript/no-meaningless-void-operator": "off",
+    "typescript/no-misused-spread": "off",
+    "typescript/no-redundant-type-constituents": "off",
+    "typescript/no-unsafe-unary-minus": "off",
+    "typescript/require-array-sort-compare": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/unbound-method": "off",
+    "typescript/no-for-in-array": "off",
+    "typescript/no-useless-default-assignment": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/engine/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              { "group": ["**/film/**", "**/scenes/**", "**/export/**", "**/sceneRegistry*", "**/App*"], "caseSensitive": true, "message": "engine 不能依赖 film / scenes / export / app(依赖方向是单向的)。" },
+              { "group": ["react", "react-dom", "react/**"], "message": "engine 不依赖 React。" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/export/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              { "group": ["**/film/**", "**/scenes/**", "**/sceneRegistry*", "**/App*"], "caseSensitive": true, "message": "export 是底层:不依赖 film / scenes / app(它们可以依赖 export,反过来不行)。" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/film/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              { "group": ["**/sceneRegistry*", "**/App*"], "caseSensitive": true, "message": "film 不能依赖 app(宿主组合影片,而不是反过来)。" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/scenes/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              { "group": ["**/film/**", "**/sceneRegistry*", "**/App*"], "caseSensitive": true, "message": "scenes 不能依赖 film / app(影片组合场景,而不是反过来)。" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["scripts/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ],
+  "ignorePatterns": ["dist", "node_modules"]
+}

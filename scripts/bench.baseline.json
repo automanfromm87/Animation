@@ -1,0 +1,13 @@
+{
+  "node": "v24.9.0",
+  "date": "2026-09-23T08:36:54.609Z",
+  "results": {
+    "render/shapes-300": 0.26849950000001854,
+    "render/tex-20": 0.6454374999999573,
+    "typeset/tex-20-fresh": 17.43858350000005,
+    "pump/anim-60f": 0.5572090000000571,
+    "implicit/polygonize-torus-48": 7.212520499999982,
+    "export/composite-1080p-x20": 0.02916649999974652,
+    "preview/fastforward-card-3s": 1.2258334999999079
+  }
+}
