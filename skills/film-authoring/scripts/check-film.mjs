@@ -2,10 +2,13 @@
 // 影片核验(film-authoring skill 自带):不改动仓库,在临时副本里
 //   类型检查(tsc -p tsconfig.app.json)→ oxlint → 把影片文件导出的分段 / 分段清单逐个干跑,
 //   核对「声明时长 vs 实际时间线」(±0.25 秒)、字幕区间 / 长度 / 语速、运行中报错(与 src/film/content.test.ts 同一套标准)。
-// timedSegment 先经 prepareVoice(没有时间表 → 干跑排草稿)再审。不用先注册影片。
+// timedSegment 先经 prepareVoice(没有时间表 → 干跑排草稿)再审:排草稿的问题、干跑时的控制台告警
+// (如 playUntil 时间不够)列进报告;源码里拿 env.remaining( 算时长的地方给出提示。不用先注册影片。
+// 另做版面检查(src/film/layoutCheck.ts:1280×720 与 405×720,每 0.5 秒 + 段尾采样;出画 / 文字互压 / 压刻度 /
+// 压字幕 / 压进度条 / 字太小 / 字幕折行超出安全区),结果作为「提醒」列出,不影响通过;--no-layout 跳过。
 //
 // 用法(在仓库根目录):
-//   node skills/film-authoring/scripts/check-film.mjs src/film/myFilm.ts [更多 .ts]
+//   node skills/film-authoring/scripts/check-film.mjs src/film/myFilm.ts [更多 .ts] [--no-layout]
 //   node skills/film-authoring/scripts/check-film.mjs README.md        # 核验 markdown 里以 `// src/...ts` 开头的完整示例
 // 结果:打印汇总;详细报告写到 <副本>/readme-verify-report.json。退出码:0 全过,1 有问题。
 import { spawnSync } from 'node:child_process';
@@ -16,11 +19,14 @@ import path from 'node:path';
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
 const argv = process.argv.slice(2);
 let copy = null;
+let layoutCheck = true;
 const mds = [];
 const tsFiles = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--copy') {
     copy = argv[++i];
+  } else if (argv[i] === '--no-layout') {
+    layoutCheck = false;
   } else if (/\.tsx?$/.test(argv[i])) {
     const abs = path.resolve(argv[i]);
     const rel = path.relative(REPO, abs).split(path.sep).join('/');
@@ -34,7 +40,7 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 if (mds.length === 0 && tsFiles.length === 0) {
-  console.error('用法:node skills/film-authoring/scripts/check-film.mjs src/film/myFilm.ts [...] | README.md');
+  console.error('用法:node skills/film-authoring/scripts/check-film.mjs src/film/myFilm.ts [...] | README.md [--no-layout]');
   process.exit(2);
 }
 copy ??= fs.mkdtempSync(path.join(os.tmpdir(), 'film-check-'));
@@ -92,6 +98,18 @@ for (const f of tsFiles) {
   written.push({ md: '(文件)', line: 0, file: f, body: '', written: true });
 }
 
+// 2b. 拿 remaining 算时长的地方(只提示,不算失败):跟台词对齐的动画该用 playUntil / playThrough。
+const hints = [];
+for (const b of written) {
+  const src = b.body !== '' ? b.body : fs.readFileSync(path.join(REPO, b.file), 'utf8');
+  src.split('\n').forEach((text, i) => {
+    if (/\bremaining\s*\(/.test(text)) {
+      const where = b.md === '(文件)' ? `${b.file}:${i + 1}` : `${b.md}:${b.line + i + 1}(${b.file})`;
+      hints.push(`${where} 用 env.remaining(…) 算时长:跟台词对齐的动画改用 env.playUntil / env.playThrough(引擎按目标算,不用估比例)`);
+    }
+  });
+}
+
 // 3. 类型检查。
 const tsc = run('npx', ['tsc', '-p', 'tsconfig.app.json'], { cwd: copy });
 const tscOut = (tsc.stdout + tsc.stderr).split('\n').filter((l) => l.trim() !== '');
@@ -123,9 +141,11 @@ fs.writeFileSync(
 import { createStubCanvas, installDomStub } from '../testing/domStub';
 import { ok, suite } from '../testing/harness';
 import { messageChannelYielder } from '../export/offlineEnv';
+import { checkFilmLayout, formatLayoutIssueLine } from './layoutCheck';
 import type { Segment } from './types';
-import { prepareVoice } from './voice';
+import { prepareVoice, voiceIdOf } from './voice';
 import type { DryRunEnv } from './voice';
+import type { VoiceProblem } from './voiceSheet';
 ${filmModules.map((b, i) => `import * as m${i} from '${rel(b.file)}';`).join('\n')}
 
 const MODULES: Array<[string, Record<string, unknown>]> = [
@@ -133,16 +153,22 @@ ${filmModules.map((b, i) => `  ['${b.file}', m${i} as unknown as Record<string, 
 ];
 const FPS = 60;
 const TOL = 0.25;
+const LAYOUT = ${JSON.stringify(layoutCheck)};
 const dryRunEnv: DryRunEnv = { createCanvas: () => createStubCanvas(), createYielder: messageChannelYielder };
 const isSeg = (v: unknown): v is Segment =>
   typeof v === 'object' && v !== null && typeof (v as Segment).play === 'function' && typeof (v as Segment).duration === 'number';
 
-async function dryRun(segment: Segment): Promise<{ settled: boolean; elapsed: number; errors: string[] }> {
+async function dryRun(segment: Segment): Promise<{ settled: boolean; elapsed: number; errors: string[]; warnings: string[] }> {
   const dom = installDomStub();
   const errors: string[] = [];
-  const { error } = console;
+  const warnings: string[] = [];
+  const { error, warn } = console;
   console.error = (...args: unknown[]): void => {
     errors.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
+  };
+  // 控制台告警(如 [film] timedSegment「…」playUntil(…) 时间不够)照样要让作者看到。
+  console.warn = (...args: unknown[]): void => {
+    warnings.push(args.map(String).join(' '));
   };
   try {
     const handle = segment.play(dom.canvas(), {});
@@ -163,9 +189,10 @@ async function dryRun(segment: Segment): Promise<{ settled: boolean; elapsed: nu
     }
     const elapsed = handle.getElapsed();
     handle.dispose();
-    return { settled, elapsed, errors };
+    return { settled, elapsed, errors, warnings };
   } finally {
     console.error = error;
+    console.warn = warn;
     dom.restore();
   }
 }
@@ -176,6 +203,7 @@ export default suite('README 示例', [
     async () => {
       const report: Array<Record<string, unknown>> = [];
       const failures: string[] = [];
+      const layoutTotals = { errors: 0, warnings: 0, failures: 0 };
       for (const [file, mod] of MODULES) {
         const groups: Array<[string, Segment[]]> = [];
         for (const [name, value] of Object.entries(mod)) {
@@ -199,15 +227,17 @@ export default suite('README 示例', [
           }
           todo.forEach((s) => done.add(s));
           let prepared: readonly Segment[] = todo;
+          const voiceProblems: VoiceProblem[] = [];
           const dom = installDomStub();
           try {
-            prepared = (await prepareVoice(todo, { dryRun: dryRunEnv, onProblem: () => undefined })).segments;
+            prepared = (await prepareVoice(todo, { dryRun: dryRunEnv, onProblem: (p) => voiceProblems.push(p) })).segments;
           } catch (e) {
             failures.push(\`\${file} \${name}: prepareVoice 失败:\${e instanceof Error ? e.message : String(e)}\`);
           } finally {
             dom.restore();
           }
           let total = 0;
+          const entries: Array<Record<string, unknown>> = [];
           for (const seg of prepared) {
             const r = await dryRun(seg);
             total += seg.duration;
@@ -221,6 +251,11 @@ export default suite('README 示例', [
             };
             const bad: string[] = [];
             const warn: string[] = [];
+            // 排草稿的问题(排草稿失败是错误,其余是提醒)与干跑时的控制台告警。
+            for (const p of voiceProblems.filter((v) => v.segment === voiceIdOf(seg))) {
+              (p.level === 'error' ? bad : warn).push(\`配音准备:\${p.message}\`);
+            }
+            for (const w of r.warnings) warn.push(\`控制台:\${w}\`);
             if (!r.settled) bad.push(\`duration + 5 秒内没有结束(已播 \${r.elapsed.toFixed(2)})\`);
             if (r.errors.length > 0) bad.push(\`运行中报错:\${r.errors[0]}\`);
             if (Math.abs(r.elapsed - seg.duration) > TOL) bad.push(\`声明 \${seg.duration} 秒,实际 \${r.elapsed.toFixed(2)} 秒\`);
@@ -242,10 +277,49 @@ export default suite('README 示例', [
               entry['problems'] = bad;
               failures.push(\`\${file} › \${name} › \${seg.name}: \${bad.join(';')}\`);
             }
+            entries.push(entry);
             report.push(entry);
+          }
+          // 版面检查:问题只作提醒(进 warnings 与 JSON 报告),不进 failures、不影响退出码。
+          if (LAYOUT) {
+            const addWarning = (i: number, text: string): void => {
+              const e = entries[i];
+              if (!e) {
+                return;
+              }
+              const list = (e['warnings'] as string[] | undefined) ?? [];
+              list.push(text);
+              e['warnings'] = list;
+            };
+            try {
+              const layout = await checkFilmLayout(prepared, { env: dryRunEnv });
+              entries.forEach((e, i) => {
+                const mine = layout.issues.filter((x) => x.segmentIndex === i);
+                if (mine.length > 0) {
+                  e['layout'] = mine;
+                }
+              });
+              for (const issue of layout.issues) {
+                if (issue.severity === 'info') {
+                  continue;
+                }
+                layoutTotals[issue.severity === 'error' ? 'errors' : 'warnings'] += 1;
+                addWarning(issue.segmentIndex, \`版面\${issue.severity === 'error' ? '✗' : ''} \${formatLayoutIssueLine(issue)}\`);
+              }
+              for (const f of layout.failures) {
+                layoutTotals.failures += 1;
+                addWarning(f.index, \`版面检查没跑成(\${f.viewport.width}×\${f.viewport.height}):\${f.error}\`);
+              }
+            } catch (e) {
+              layoutTotals.failures += 1;
+              report.push({ file, export: name, note: \`版面检查没跑成:\${e instanceof Error ? e.message : String(e)}\` });
+            }
           }
           report.push({ file, export: name, segments: prepared.length, totalSeconds: Number(total.toFixed(2)) });
         }
+      }
+      if (LAYOUT) {
+        report.push({ layoutTotals });
       }
       writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify(report, null, 2));
       ok(failures.length === 0, failures.join('\\n'));
@@ -263,6 +337,7 @@ console.log(`核验的文件 ${written.length} 个(${written.map((b) => b.file).
 for (const p of problems) console.log(`✗ ${p}`);
 console.log(tscErrors.length === 0 ? '✓ 类型检查通过' : `✗ 类型检查 ${tscErrors.length} 个错误:\n  ${tscErrors.join('\n  ')}`);
 console.log(lintOut.length === 0 ? '✓ oxlint 通过' : `✗ oxlint:\n  ${lintOut.join('\n  ')}`);
+for (const h of hints) console.log(`提示:${h}`);
 const passed = test.status === 0;
 if (fs.existsSync(reportPath)) {
   const rep = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
@@ -274,6 +349,12 @@ if (fs.existsSync(reportPath)) {
       console.log(`  · ${e.file} › ${e.export}:${e.segments} 段,合计 ${e.totalSeconds}s`);
     } else if (e.note) {
       console.log(`  · ${e.file}:${e.note}`);
+    } else if (e.layoutTotals) {
+      const t = e.layoutTotals;
+      console.log(
+        `版面检查:✗ ${t.errors} 个错误级、! ${t.warnings} 个提醒级${t.failures > 0 ? `、${t.failures} 处没跑成` : ''}(只作提醒,不影响通过)。` +
+          '注册进 src/film/catalog.ts 后可用 npm run layout:check -- <影片> 看完整报告与 ?preview= 地址',
+      );
     }
   }
 }

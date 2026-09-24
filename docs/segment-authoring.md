@@ -125,15 +125,18 @@ export const slope = timedSegment(
     env.scene.add(graph, tangent, formula);
     await env.play(new Create(graph));
     await env.untilLine('slope-2'); // 等第二句开口
-    await env.play(new Create(tangent, { runTime: env.remaining('slope-2') * 0.4 }));
-    await env.untilMark('slope-2', 'k'); // 正好说到「斜率」
+    // 切线画到「斜率」这个词之前 0.3 秒收住,返回时正好说到「斜率」
+    await env.playUntil({ line: 'slope-2', mark: 'k', lead: 0.3 }, new Create(tangent));
     await env.play(new Indicate(formula));
   },
 );
 ```
 
-- 动画要赶在句中某个词之前完成时,用这句剩余时间的**比例**(如 `env.remaining(id) * 0.4`),或者干脆等那个标记;
-  不要写成「句尾减 0.8 秒」这种常数 —— 配音一慢,常数就不够了。
+- 跟着台词伸缩的动画用 `env.playUntil(目标, ...动画)` 写「在哪儿收住」:`{ end: id }` 这句说完、
+  `{ line: id, mark: 'k' }` 说到这个词、`{ start: id }` 那句开口;可加 `min`(缺省 = 动画自己的时长,只拉长不压缩)、
+  `max`、`lead`。整句都在画用 `env.playThrough(id, 动画)`。时长由引擎按目标算,草稿和配音同一条规则;
+  时间不够时按 `min` 播,控制台告警 `[film] timedSegment「…」playUntil(…)`。
+- 别拿 `env.remaining(id)` 乘比例、减常数:那是按草稿速度猜的,配音一快一慢就对不上,台词稿里的动画需要也会记错。
 - `node scripts/test.mjs voice` 跑配音相关的测试;`npm run voice:script -- <影片>` 看排出来的草稿时间与每个提示点前动画要多久。
 - 和配音方的协作流程、时间表格式见 [voice.md](voice.md)。
 
@@ -141,6 +144,7 @@ export const slope = timedSegment(
 
 ```bash
 node scripts/test.mjs content  # 时长与字幕
+npm run layout:check -- <影片>  # 版面:出画、互压、压刻度、压字幕、竖屏字太小(影片先登记进 catalog.ts)
 npm run check                  # 类型 + lint + 全测试
 npm run bench -- preview       # 快进性能没退化(可选)
 ```

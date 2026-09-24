@@ -28,6 +28,8 @@ import { Circle, Create, FadeIn, Label, Scene, Tex, lightTheme } from '../engine
 - **动画** `Create`(描边生长)、`FadeIn/FadeOut/FadeTransform`、`MoveTo/RotateTo/ScaleTo`、
   `Transform(源, 目标)`(替换语义:位置/形状/颜色一起变)、`Write`(逐笔书写)、
   `TweenValue` + `ValueTracker`(外部参数)、缓动 `linear/smooth/easeIn/easeOut/easeInOut`。
+  `Create` / `Write` 的笔速 `{ pace: 'curvature', paceStrength? }`:急弯、拐角处放慢,直处加快,
+  时长与终态不变(缺省 `'uniform'` 按弧长匀速;直线、圆、圆弧、椭圆不受影响)。自定义生长用 `revealPartial(path, f, pace)`。
   自定义:继承 `BasePlayable` 实现 `begin/interpolate/finish`。
 - **按结构推导** `TransformMatchingTex(源, 目标, { partMap, transformMismatches, matchAcrossSizes, duplicates, fadeLag, fadeScale })`:
   相同的项平移、变了的才变形;公式里用 `\class{名字}{…}` 标部分(`tex.partNames` / `getPartBox` / `partLayers`)。
@@ -45,6 +47,9 @@ import { Circle, Create, FadeIn, Label, Scene, Tex, lightTheme } from '../engine
 - **路径** `PathData`/`PathBuilder`/`parseSvgPath`、`partialPath`(按弧长截取,生长动画用)、
   `alignPaths`/`lerpPath`(变形对齐与插值)。
 - **排版** `Layout`(行列容器,一次性排布)、`Theme`(浅色 `lightTheme` 等预设)。
+  排版助手(Manim 的 `next_to` / `arrange` / `align_to`,按视觉外接盒只平移、一次性):`nextTo(m, 参照, side, buff = 16)`、
+  `arrange(objs, { direction, buff, align, at })`、`alignTo`、`centerAt`、`fitWidth` / `fitWithin`(只缩不放)、`keepInside`、`visibleWorldBounds(scene)`。
+  版面检查:`findSceneLayoutIssues(scene, { zones? })`(出画、文字互压、压刻度、压遮挡区、字太小),影片整片用 `npm run layout:check -- <影片>`。
 
 ## film(播放器与内容)
 
@@ -63,7 +68,9 @@ import type { Segment } from './film';
   选项:转场、循环、字幕/进度条样式、`onSegment` / `onError` / `onPausedChange` / `onEnded`、
   时钟与环境注入(`clock` / `exportEnv` / `offlineEnv`,测试用)。
 - **配音** `timedSegment({ id, name, lines: [{ id, text }] }, async (env) => …)`:按台词对齐的分段,
-  `env.untilLine(id)` / `env.untilMark(lineId, mark)` / `env.remaining(id)` 踩提示点,时长与字幕时间来自配音时间表;
+  `env.untilLine(id)` / `env.untilMark(lineId, mark)` 踩提示点,跟着台词伸缩的动画用
+  `env.playUntil({ start | end: id } 或 { line: id, mark }, ...动画)` / `env.playThrough(id, ...动画)`(引擎按目标算时长;
+  `env.remaining(id)` 只是兼容保留的查询),时长与字幕时间来自配音时间表;
   `prepareVoice(segments, { sheetUrl })` 加载时统一套用(没有时间表时干跑排草稿),产出时长确定的普通分段(`segment.voice.clips`)。
   控制器 `setAudioEnabled(on)`(须在点击回调里调用;实时录制期间关声音被忽略)、`getState().audio`;
   `exportVideo({ audio })` 成片带配音(缺省带),进没进成片看返回句柄的 `audio`。
@@ -115,6 +122,7 @@ controller.exportVideo({ mode?: 'auto' | 'offline' | 'realtime', fps?, maxLongEd
 npm run dev                     # 开发服务
 npm run build                   # 类型检查 + 生产构建
 npm run check                   # typecheck + lint + 全测试 + 运行器自测
+npm run layout:check -- <影片>   # 版面检查:横屏 1280×720 + 9:16 405×720,每 0.5 秒采样,按分段列问题与 ?preview= 地址
 npm run bench                   # 性能基线(与 scripts/bench.baseline.json 比对)
 npm run bench -- render         # 只跑名字含 render 的负载
 npm run bench -- --save         # 存成新基线

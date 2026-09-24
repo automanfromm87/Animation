@@ -5,7 +5,7 @@ description: 为本仓库(mini-manim,3Blue1Brown 风格的网页数学动画引�
 
 # mini-manim 影片创作
 
-**影片 = 分段清单。** 每个分段 = 一个布景 + 一条时间线 + 几条字幕 + 手写的 `duration`。播放器负责段间转场(白场 0.6 秒)、字幕条、带章名的进度条、单帧预览和导出(字幕、进度条、配音一起进成片)。
+**影片 = 分段清单。** 每个分段 = 一个布景 + 一条时间线 + 几条字幕 + 手写的 `duration`。播放器负责段间转场(白场 0.6 秒)、字幕条、带章名的进度条、故事板 / 单帧预览和导出(字幕、进度条、配音一起进成片)。
 
 完整手册是仓库根的 `README.md`(第 2 节教程、第 3 节手艺、第 4 节 11 个模板、第 5–9 节参考、第 12 节排错)。这份 skill 是提炼:流程、硬规则、可照抄的数字。要细节时按小节号查 README,例如 `grep -n '^### 3.4' README.md` 找到行号再读那一段。
 
@@ -23,9 +23,17 @@ description: 为本仓库(mini-manim,3Blue1Brown 风格的网页数学动画引�
    ```bash
    node skills/film-authoring/scripts/check-film.mjs src/film/<片名>.ts
    ```
-   它在临时副本里做类型检查、oxlint,把导出的每个分段干跑一遍,核对声明时长 vs 实际时间线(±0.25 秒)、字幕区间,并提醒偏长 / 偏快的字幕。登记之后再跑 `node scripts/test.mjs content` 和 `npm run check`。
-7. **看画面**:`npm run dev`,打开 `/?scene=<键>`;`/?scene=<键>&preview=<秒>` 看某一帧(秒 = 前面各段 duration 之和 + 段内秒数;预览不画白场、字幕、进度条)。16:9 和 9:16 各看一遍。沙箱里起不了浏览器时,把要人眼看的点列给用户。
-8. **交付时汇报**:每段声明 / 实际时长、总长(Σ duration + 0.6 × 段数)、核验结果、需要用户在浏览器里确认的画面。
+   它在临时副本里做类型检查、oxlint,把导出的每个分段干跑一遍,核对声明时长 vs 实际时间线(±0.25 秒)、字幕区间,并提醒偏长 / 偏快的字幕;timedSegment 还会列出排草稿的问题、`playUntil` 时间不够的告警,以及拿 `env.remaining(` 算时长的地方。
+   另做版面检查(横屏 1280×720 与 9:16 各跑一遍):文字出画、两块字互压、压住坐标轴刻度、被字幕条 / 进度条盖住、字太小、字幕折行超出安全区,
+   结果以「版面」开头列在提醒里(`版面✗` 是错误级,必须修;其余逐条看),不影响通过。登记之后再跑 `node scripts/test.mjs content`、`npm run check`,
+   以及 `npm run layout:check -- <片名>`(完整版面报告:按分段列出时间段、怎么修和 `?preview=` 地址;有错误级问题或有分段没查成时退出码 1)。
+7. **看画面**:`npm run dev`,先开**故事板** `/?scene=<键>&storyboard=segments`:每段三张缩略图(段首 +0.7 秒 / 段中 / 段尾 −0.3 秒),和导出成片同一合成(白场、字幕、进度条),下面写着全片时刻、第几段、段内秒数、字幕。
+   段首那张里不该有后登场的对象(漏了先藏后揭),段尾那张就是结论字幕说的样子;说明里的黄字 `脚本 Xs 就结束了` / `脚本超过声明的 Ds` / `出错:…` 必须处理(时长账不对 / 脚本抛错)。
+   关键时刻列出来看:`&storyboard=6,8.5,1:05`(**只写一个纯整数是张数**,第 10 秒写 `10s` / `0:10` / `10,`);缺省 `&storyboard` 均匀 24 张,上限 200。
+   点缩略图打开该时刻的单帧预览 `&preview=<秒>`(只画主画面,不画白场、字幕、进度条)。秒 = 前面各段 duration 之和 + 段内秒数。
+   画幅:点工具条或地址加 `&aspect=w16h9` / `w9h16`(故事板按当前画幅排版,缺省 `全屏` 是窗口比例),16:9 和 9:16 各看一遍。故事板是静止的,节奏和字幕同步最后完整播一遍。
+   沙箱里起不了浏览器时,把故事板地址和要人眼看的点列给用户。
+8. **交付时汇报**:每段声明 / 实际时长、总长(Σ duration + 0.6 × 段数)、核验结果、需要用户在浏览器里确认的画面(附故事板地址)。
 
 ## 骨架:一部能跑的小片
 
@@ -99,7 +107,7 @@ import 只从三处来:引擎 `'../engine'`,分段模板与类型 `'./film'`,助
 | 入场 | 搭建时 | 注意 |
 | --- | --- | --- |
 | `FadeIn(m)` | `hide(m)` | 只藏被 FadeIn 的那一层;`FadeIn(group)` 时子元素别藏 |
-| `Create(m)` | `unrevealed(m)` | Create 不碰 opacity,被 hide 过的永远看不见。Annotation(Brace、Angle 等)、3D 网格、空组不能 Create,改 FadeIn |
+| `Create(m)` | `unrevealed(m)` | Create 不碰 opacity,被 hide 过的永远看不见。`Annotation`(编号角标)、3D 网格、空组、少于 2 点的 `Polygon` 不能 Create,改 FadeIn(`Brace`、`Angle` 可以 Create) |
 | `Write(m)` | 不藏;不是第一拍时 `hide(m)`,紧挨 `env.play(new Write(m))` 的上一行写 `m.opacity = 1` | |
 | `Transform` / `TransformMatchingTex(src, dst)` | `hide(dst)`,两个都进场景 | 播完 src 留在场景(opacity 0),之后对 dst 做动画 |
 | `makePlot` 的轴和曲线 | 已藏好 | 用 `plotIntro`;另加进 `p.plot` 的曲线要自己 `unrevealed` |
@@ -120,16 +128,18 @@ import 只从三处来:引擎 `'../engine'`,分段模板与类型 `'./film'`,助
 | `cardSegment` / `chapterCard` | 1 + holdSeconds(自动)/ 7(自动) |
 | `listSegment` | n × (1 + gap) + holdSeconds,**自己算好写进 duration**(n 含标题行) |
 | `timedSegment` | 不写 duration,由台词 / 配音时间表决定(见 api-cheatsheet) |
+| `env.playUntil(目标, …)` / `env.playThrough(id, …)`(timedSegment 里) | max(目标时刻 − 调用时刻, `min`):动画按目标伸缩,画完静止到目标 |
 
 **4. 字幕。** 首条 0.2 秒起;相邻间隙 0.2–0.5 秒;每条 ≤ 20 字(单行,两行会压进画面);停留 2.5–6 秒;读速 ≤ 4.5 字/秒(舒服的是字数 / 3 秒;字母、数字、符号都按字算);`[start, end)` 不重叠;末条不晚于段尾。关键信息必须写进字幕(读屏只念字幕)。结论字幕出现时,画面已停在它说的状态。
 
 **5. 转场。** 每段前 0.6 秒被白场淡入遮着,别把一闪而过的关键镜头放在 t < 0.6;段尾再定格 0.6 秒淡出(不计入 duration),所以**以停留收尾,不要 FadeOut**。收尾停留 3–6 秒(中位 4)。
 
 **6. 脚本要能重放。** 预览、跳转、离线导出、配音草稿都会在虚拟时钟上重跑 `direct`:只用引擎的时间,不用 `setTimeout` / `Date.now()` / 无种子 `Math.random()`;MObject 在 `direct` 里新建(`listSegment` 的 `entries` 必须是工厂函数)。
+**图片 / SVG 要预加载**:文件放 `public/`,在影片文件**顶层** `const EARTH = await loadImage('/img/earth.png')`(SVG 用 `loadSvg`,多个用 `await preloadAssets([...])` 解构),`direct` 里只同步构造 `picture(EARTH, 宽, at)` / `illustration(CAT, 宽, at)`。**绝不在 `direct` 里 await 加载**(不报错,但段内时钟停着、外面在走,预览、导出全错位);顶层 await 只写在具体影片文件里,别放进 helpers。SVG 源码字符串 `illustration('<svg …>…</svg>', 宽)` 不用预加载;远程图要对方开 CORS,最好下载进 `public/`。见 README §6.12。
 
 **7. 数学必须准确。** 字幕和画面上每句话都要站得住(「h 趋于 0」不是「h 等于 0」;极值的必要条件不要说成充要条件)。
 
-**8. 竖屏。** 9:16 会重建当前段;用 `isNarrow(scene)` 分支,只改位置和大小,时间线不变(内容测试只跑横屏,竖屏要人眼看)。左右并排的布局改成上下叠放。
+**8. 竖屏。** 9:16 会重建当前段;用 `isNarrow(scene)` 分支,只改位置和大小,时间线不变(内容测试只跑横屏;版面检查会连 9:16 一起查出画、互压、字太小,别的要人眼看)。左右并排的布局改成上下叠放。
 
 ## 可照抄的数字
 
@@ -148,6 +158,7 @@ import 只从三处来:引擎 `'../engine'`,分段模板与类型 `'./film'`,助
 | 卡片停留 | 片头 / 章节卡 / 片尾 | 4 / 6 / 3–5 |
 
 字幕说「匀速」,缓动就必须 `rateFunc: linear`(从 `'../engine'` import);缺省 `smooth` 两头慢。
+想要手写感(笔在急弯、拐角处放慢):`new Create(m, { pace: 'curvature' })`,`Write` 同样的选项,开场曲线 `plotIntro(env, p, { curvePace: { pace: 'curvature' } })`;时长不变,缺省按弧长匀速。
 
 **片长参考**:一分钟概念短片 30–60 秒、3–5 段(内容段 15–25 秒,3–6 条字幕);三分钟章节短片约 21 段(内容段约 10 秒,3 条字幕);十分钟一集约 35 段(内容段 14–25 秒,4–5 条字幕)。全片动与停约各一半,别连着三段扫动。同一时刻只给一个新焦点。
 
@@ -158,8 +169,9 @@ import 只从三处来:引擎 `'../engine'`,分段模板与类型 `'./film'`,助
 - 坐标:原点在画面中心,x 向右、**y 向下**,角度弧度**顺时针**;但 `Axes` / `NumberPlane` 内部是数学坐标(y 向上),用 `p.W(x, y)` / `axes.toLocal` 换算。
 - 取景:搭完景用 `stage(scene, 对象[], pad)`(= add + `fitObjects`),pad 常用 20–40;会动、会变长的对象按最大的样子放进 `stage` 第 4 个参数 `fitExtra`(只参与取景)。有字幕的段自动避开字幕安全区;**没字幕的段不避让**,底部进度条(18 px,有章名 38 px)可能压住内容。
 - 字号是世界单位,屏幕大小取决于取景缩放:卡片缩放约 2.9、坐标系段约 1.3。常用:标题 56,公式 34–40,标签 22–28。`Axes` 刻度数字固定 10 号。
+- 相对摆放用引擎的排版助手(按外接盒、只平移、一次性,README §6.9):`nextTo(说明, 图, 'down', 20)`、`arrange([a, b, c], { direction: 'down', align: 'start' })`、`alignTo`、`centerAt`(组居中)、`fitWidth`(竖屏收窄长公式)、`keepInside(m, visibleWorldBounds(scene)!, 8)`(拉回画面;推近前传 `{ view: scene.getFitView(对象, pad) }` 按终点算)。图下的公式离 x 轴刻度行至少 20 世界单位。
 - 背景:影片主题默认画淡网格和原点十字,在 `direct` 里 `scene.setTheme({ ...lightTheme, showGrid: false, showAxes: false })` 关掉(只影响本段;卡片、列表段关不了)。
-- 颜色(十六进制,别用颜色名):墨色 `#1a1a1a` 主线;蓝 `#2563eb` 主对象;粉 `#db2777` 强调 / 切线;绿 `#16a34a` 结论、正确;紫 `#7c3aed` 次要;灰 `#9ca3af` 对照;红 `#dc2626` 错误;橙 `#ea580c` 只做临时高亮。公式上色用 `textColor` 或 `ColorTo(tex, '#hex')`,局部用 `\textcolor{#hex}{…}`(不支持 `\textcolor[HTML]`、`\bm`)。
+- 颜色(十六进制,别用颜色名;README §3.8):缺省单色墨线(主题 `#1f2937`),靠虚实、出场顺序分主次。要上色时:蓝 `#2563eb` 主函数曲线;粉 `#db2777` 割线 / 运动中的对象;绿 `#16a34a` 切线、极限、答案;橙 `#ea580c` / 紫 `#7c3aed` Δy / Δx;灰 `#6b7280` 旁注;浅灰虚线 `#9ca3af` 轨迹;填充用同色低透明度(如 `rgba(37,99,235,0.15)`、`#dbeafe`)。一段除墨色最多 4 种,同义同色。橙是 `Indicate` / `Circumscribe` / `Flash` 的缺省强调色,要强调的对象别用橙。公式上色用 `textColor` 或 `ColorTo(tex, '#hex')`,局部用 `\textcolor{#hex}{…}`(不支持 `\textcolor[HTML]`、`\bm`)。
 
 ## 注册新片(四处)
 
@@ -192,24 +204,34 @@ import { myFilm } from './myFilm';
 | --- | --- |
 | 对象开场就露出、到时间「啪」地消失再出现 | 没先藏 → 按硬规则 1 |
 | `Create` 完仍看不见 | 用了 `hide` → 改 `unrevealed`,或 Create 前 `m.opacity = 1` |
-| `Create 需要支持描边生长的对象……` | Brace / Angle / 3D / 空组不能 Create → 改 FadeIn |
+| `Create 需要支持描边生长的对象……` | `Annotation`(编号角标)/ 3D 网格 / 空组 / 少于 2 点的 `Polygon` 不能 Create → 改 FadeIn(3D 线条、坐标轴、字母可以 Create) |
 | 「源对象 / 目标对象不在场景里」 | Transform 的两个对象都要先 `stage` |
 | 内容测试「声明时长 X 秒,实际时间线 Y 秒」 | 时长账算错 → 按实际改 duration,或补 / 删 `env.wait` |
+| 故事板黄字「脚本 Xs 就结束了」/「脚本超过声明的 Ds」 | 同上:时间线比 duration 短 / 长 |
+| 故事板黄字「白场 N%」、缩略图发白 | 那一刻在段首 0.6 秒淡入里 → 关键镜头挪到 t ≥ 0.6 |
 | 「字幕重叠或乱序」/「字幕晚于分段结束」 | 调 start / end,或加长 duration |
 | 字幕压住画面 | 字幕超过一行 → 缩到 ≤ 20 字 |
 | 公式显示成红字 | TeX 写错或用了不支持的命令(`tex.error` 不一定报)→ 改源码,预览里看一眼 |
+| `图片「…」还没有预加载…` / `还在加载…`(AssetError `not-loaded` / `loading`) | 字符串构造前没在影片文件顶层预加载 / 漏了 `await` → 改成句柄写法 `const X = await loadImage(…)`,再 `picture(X, …)` |
+| 红条「场景加载失败:图片「…」取不到:HTTP 404(文件应放在 public/…)」(内容测试里是 `<加载模块>`) | 文件不在 `public/` 对应位置(括号里带「index.html」的是开发服务器顶替了不存在的文件)→ 放好文件或改地址,刷新页面;`没开 CORS` 的远程图下载进 `public/` |
+| 提醒 `控制台:[svg] 「…」里有不支持的内容,已忽略:<text>×…` | SVG 里的文字、滤镜、裁剪被忽略 → 文字用 Label / Tex 叠在插画上,其余在设计工具里拼合成路径 |
+| 插画 `setStyle` 改不了颜色;图片 `ColorTo` / `Indicate` 不变色 | SVG 写明的颜色锁在部件上 → `ColorTo(illo.part(id), …)`;位图不着色 → 用 `Circumscribe` / `Flash` |
 | 加片后 `npm test` 在 voiceDemo.test 失败 | 登记 ④ 没做 |
-| 竖屏出画 / 字太小 | 加 `isNarrow` 分支,扫动两端放进 `fitExtra` |
+| 竖屏出画 / 字太小 | 加 `isNarrow` 分支,扫动两端放进 `fitExtra`;长公式 `fitWidth` 收窄 |
+| 提醒里的「版面」:文字出画 / 被字幕盖住 | 取景没框住:会变大、后出现、会移动的对象按最大包络进 `stage` 的 `fitExtra`;推近镜头时邻近的字藏掉或一起框进来 |
+| 「版面」:文字互压 / 压住刻度 | 用 `nextTo` / `arrange` 按外接盒摆,或错开出现时间;读数离刻度行至少一个字高 |
+| 「版面」:被进度条盖住 | 这段没字幕就没有底部安全区 → 至少写一条字幕,或取景多留 pad |
+| 「版面」:字幕超出安全区 | 字幕折成了两行 → 缩短(9:16 一行约 23 字) |
 | 导出没有配音 | 看导出后工具条下方的提示(`handle.audio` 的原因);README §11、§12 |
 
 更多见 README §12。配音流程见 README §10 和 references/api-cheatsheet.md 的 timedSegment 一节。
 
 ## 交付前检查清单
 
-- [ ] `check-film.mjs` 全部通过,没有字幕提醒(或每条提醒都有理由)
+- [ ] `check-film.mjs` 全部通过,没有字幕提醒、没有 `版面✗`(或每条提醒都有理由)
 - [ ] 登记四处;`node scripts/test.mjs content`、`npm run check` 通过
 - [ ] 每段一件事;字幕叙事弧完整;结论字幕与画面同步
-- [ ] 每个将来入场的对象都藏好了(用 `?preview=段起点+0.1` 看:只有第一个动画在入场)
+- [ ] 每个将来入场的对象都藏好了(`&storyboard=segments` 的段首帧里没有后登场的对象;拿不准用 `?preview=段起点+0.1` 看:只有第一个动画在入场)
 - [ ] 段尾停留 3–6 秒,没有 FadeOut 收尾;关键镜头不在 t < 0.6
 - [ ] 数学表述逐句核对过
-- [ ] 16:9、9:16 各看一遍(或把需要人眼看的帧列给用户)
+- [ ] 故事板 16:9、9:16 各看一遍(`&storyboard=segments&aspect=w16h9` / `&aspect=w9h16`),没有黄字标记(或把需要人眼看的地址列给用户)

@@ -79,8 +79,8 @@ npm run dev      # 打开终端打印的地址(缺省 http://localhost:5173/)
 
 | 控件 | 作用 |
 | --- | --- |
-| `全屏` `16:9` `4:3` `9:16` | 画框比例;`全屏` = 浏览器窗口比例,是打开页面时的缺省。横竖翻转时影片当前段从头重建 |
-| `暂停` / `播放` | 预览模式下没有 |
+| `全屏` `16:9` `4:3` `9:16` | 画框比例;`全屏` = 浏览器窗口比例。打开页面时按地址里的 `&aspect=`(见下),没有就是 `全屏`;点了会写回地址。横竖翻转时影片当前段从头重建 |
+| `暂停` / `播放` | 单帧预览、故事板模式下没有(这两种模式只有画幅按钮和一个说明徽标,也没有声音、导出) |
 | `开启声音` / `关闭声音` | 片子有配音时出现;浏览器要求点一下才出声 |
 | `自动` / `MP4` / `WebM` | 导出格式(两种都能导时出现),`自动` = MP4 优先 |
 | `导出` | 导出中变成 `取消 N%`,再点就取消;完成后自动下载(文件名见 [2.6](#26-导出)) |
@@ -89,7 +89,11 @@ npm run dev      # 打开终端打印的地址(缺省 http://localhost:5173/)
 
 **进度条**:点击跳到对应时刻,悬停显示 `分段名 mm:ss / mm:ss`。Tab 聚焦后:`→` `↑` / `←` `↓` 下一段 / 上一段;`PageDown` / `PageUp` 下一章 / 上一章;`Home` / `End` 首段 / 尾段;`空格` / `K` 暂停 / 继续。
 
+**故事板**(看片子的主要方式):`/?scene=derivatives&storyboard` 一页铺出全片均匀取的 24 张缩略图,每张**和导出的成片同一合成**(转场白场、字幕、进度条都在),下面写着全片时刻、第几段、段内秒数和字幕;`&storyboard=segments` 每段三张,`&storyboard=1:05,480s` 只看列出的时刻。点缩略图打开那一刻的单帧预览。只对影片有效。详见 [5.9](#59-预览跳转安全区竖屏重建背景网格与-settheme)。
+
 **单帧预览**:`/?scene=derivatives&preview=480` 只画第 480 秒那一帧(按各段 `duration` 累加,不含转场,可带小数),不播放。只画主画面,**不画字幕、进度条和转场白场**;只对影片有效。详见 [5.9](#59-预览跳转安全区竖屏重建背景网格与-settheme)。
+
+**画幅参数** `&aspect=`:`w16h9` / `w4h3` / `w9h16` 等于打开页面就点了 `16:9` / `4:3` / `9:16`(不写、写 `full` 或认不出 = `全屏`),播放、单帧预览、故事板都认,例如 `/?scene=derivatives&storyboard=segments&aspect=w9h16` 按竖屏看全片。
 
 系统开了「减少动态效果」时,演示场景打开即暂停;影片不受影响。
 
@@ -364,18 +368,29 @@ export default suite('内容时序', [
 
 `npm run dev`,打开 `http://localhost:5173/?scene=first`;保存后热更新,画面没变就刷新。
 
-用 `?preview=` 逐帧检查,秒数 = 前面各段 `duration` 之和 + 段内秒数(片头 0–5,正方形 5–16.7,抛物线 16.7–34.4,片尾 34.4–38.4):
+**先看故事板** `/?scene=first&storyboard=segments`:一页 12 张缩略图(4 段 × 段首 +0.7 秒 / 段中 / 段尾 −0.3 秒),按段顺序逐张出图。每张和导出的成片同一合成(白场、字幕、进度条都在),下面三行说明,例如 `0:10.9 · 第 2/4 段 · 正方形的面积`、`段内 5.9s / 11.7s`、`面积是 x 的平方`。扫一遍:
 
-| 地址 | 应该看到 | 检查什么 |
+| 看哪张 | 应该是 | 不对时 |
 | --- | --- | --- |
-| `/?scene=first&preview=6` | 正方形描了一大半,没有 x、没有公式 | 没登场的对象没露出来 |
-| `/?scene=first&preview=8` | 正方形和两个 x,还没有 S = x² | `Write` 之前 `area` 藏着 |
-| `/?scene=first&preview=20` | 坐标轴和抛物线,探针还没出现 | `plotIntro` 揭开了轴和曲线 |
-| `/?scene=first&preview=34` | 切点停在 x = 1,读数 k = 2.00,左上角 k = 2x | 结论与字幕一致,读数没被划掉 |
+| 每段第一张(段内 0.7 秒,刚出白场) | 只有开场动画正在画的东西 | 后登场的对象已经露出来 → 漏了[先藏后揭](#34-先藏后揭) |
+| 每段最后一张(段尾前 0.3 秒) | 末条字幕说的样子,没有东西出画 | 画面和结论字幕对不上 → 改时间线或字幕 |
+| 所有缩略图的字幕 | 一行,不压画面 | 折成两行 → 缩到 ≤ 20 字([3.3](#33-字幕)) |
+| 说明第二行的黄字 | 没有 | `脚本 Xs 就结束了…` / `脚本超过声明的…` / `出错:…` → 见 [12.2](#122-画面不对预览播放时) |
 
-- 预览不画字幕,最后要完整播一遍,看字幕是否一行、是否与画面同步。
-- 公式写错不报错,只显示成红字,测试也抓不到。
-- 点 `9:16` 看竖屏;内容测试只跑 1280×720 横屏。
+**再看关键时刻** `/?scene=first&storyboard=6,8,20,34`,只出这四张。秒数 = 前面各段 `duration` 之和 + 段内秒数(片头 0–5,正方形 5–16.7,抛物线 16.7–34.4,片尾 34.4–38.4):
+
+| 时刻 | 应该看到 | 字幕 | 检查什么 |
+| --- | --- | --- | --- |
+| 6 | 正方形描了一大半,没有 x、没有公式 | 边长为 x 的正方形 | 没登场的对象没露出来 |
+| 8 | 正方形和两个 x,还没有 S = x² | 边长为 x 的正方形 | `Write` 之前 `area` 藏着 |
+| 20 | 坐标轴和抛物线,探针还没出现 | 这是 y = x² 的图像 | `plotIntro` 揭开了轴和曲线 |
+| 34 | 切点停在 x = 1,读数 k = 2.00,左上角 k = 2x | 在横坐标 x 处,切线斜率是 2x | 结论与字幕一致,读数没被划掉 |
+
+- **只写一个纯整数时它是张数**:`&storyboard=6` 是均匀取 6 张,不是第 6 秒;第 6 秒写 `6s`、`0:06` 或 `6,`(页头会提醒)。
+- 点缩略图打开同一时刻的**单帧预览** `/?scene=first&preview=<秒>`:一张大图,只画主画面(没有字幕、进度条、白场),看公式细节、改秒数逐帧挪都用它。
+- 点 `9:16` 看竖屏:故事板约 0.2 秒后按竖屏整页重画,地址里多出 `&aspect=w9h16`,点进去的单帧预览也是竖屏。内容测试只跑 1280×720 横屏。发布横屏先点 `16:9`,缩略图才和成片同比例(`全屏` 是窗口比例)。
+- 故事板是静止的:节奏顺不顺、字幕和动作是否同步,最后还要完整播一遍。
+- 公式写错不报错,只显示成红字,测试也抓不到 —— 在缩略图或单帧预览里看。
 
 **出错时**不弹窗,看浏览器控制台:
 
@@ -385,7 +400,7 @@ export default suite('内容时序', [
 | 分段起播时抛错(如 `title` / `titleTex` 没写对) | 这一段整个跳过 | `[film] 分段「片尾」启动失败` |
 | 脚本跑到一半抛错 | 停在抛错那一刻,淡出后接下一段 | `[film] 分段「正方形的面积」播放出错` |
 
-后两种内容测试都能抓到。
+后两种内容测试都能抓到;故事板里,起播抛错的那段格子是灰的、标 `出错:分段启动失败:…`,中途抛错的段从抛错之后的缩略图起标 `出错:…`。
 
 ### 2.5 跑检查
 
@@ -394,7 +409,7 @@ node scripts/test.mjs content   # 只跑内容时序,约 5 秒
 npm run check                   # 提交前总检:类型检查 + lint + 全部测试
 ```
 
-通过时输出 `✓ 63/63 通过（1 个测试文件）`(现有三部片子 59 段 + 本片 4 段)。它在 1280×720 下按 60 帧干跑每段,查:能在 `duration` + 5 秒内结束、运行不报错、时间线与 `duration` 差 ≤ 0.25 秒、字幕区间合法且不重叠、不晚于段尾。**不查**字数语速、竖屏、TeX 红字、互压出画、提前露出,这些靠 [2.4](#24-看效果) 用眼睛看。详见 [5.8](#58-内容测试查什么)。
+通过时输出 `✓ 63/63 通过（1 个测试文件）`(现有三部片子 59 段 + 本片 4 段)。它在 1280×720 下按 60 帧干跑每段,查:能在 `duration` + 5 秒内结束、运行不报错、时间线与 `duration` 差 ≤ 0.25 秒、字幕区间合法且不重叠、不晚于段尾。**不查**字数语速、竖屏、TeX 红字、互压出画、提前露出,这些靠 [2.4](#24-看效果) 用眼睛看(互压出画和竖屏版面可以先跑 `npm run layout:check -- <影片>`,见 [12.1](#121-内容测试-node-scriptstestmjs-content))。详见 [5.8](#58-内容测试查什么)。
 
 **时长账对不上**(删掉正方形段的 `await env.wait(1.5);`):
 
@@ -578,6 +593,7 @@ npm run check                   # 提交前总检:类型检查 + lint + 全部�
 | `chapterCard({ … })` | 1 + 6 = **7**,自动算 | |
 | `listSegment({ entries, gap, holdSeconds, duration, … })` | n × (1 + gap) + holdSeconds,**要自己算好写进 duration** | n 包括标题行 |
 | `timedSegment` | 不写 duration。草稿排期 = 0.3 + Σ 每句 + 0.25 × (句数 − 1) + 0.6;每句 = max(0.8, 字数 / 4.5 + 0.15 × 逗号类 + 0.3 × 句号类)(`19.6` 的小数点也算句号类) | 动画比台词长时顺延;有配音时间表就按表。计字细则见 [5.5](#55-timedsegment按台词对齐) |
+| `await env.playUntil(目标, …)` / `env.playThrough(id, …)`(只在 `timedSegment` 里) | max(目标时刻 − 调用时刻, `min`):动画按目标伸缩,画完静止等到目标;目标已过或剩的不到 `min` 时就是 `min`。`playThrough` 的句子还没开口时先等它开口 | 目标时刻来自时间表或草稿,不用自己算;见 [4.11](#411-配音驱动短片)、[5.5](#55-timedsegment按台词对齐) |
 
 ### 3.3 字幕
 
@@ -585,7 +601,7 @@ npm run check                   # 提交前总检:类型检查 + lint + 全部�
 | --- | --- | --- | --- |
 | 1 | 首条起点 | **0.2 秒**(卡片和 `timedSegment` 自动 0.3) | 画面领先字幕 0.2 秒 |
 | 2 | 相邻间隙 | **0.2–0.5 秒**(拓扑一律 0.2,导数中位 0.5,配音 0.25) | 看得出「换了一句」 |
-| 3 | 单条长度 | **≤ 20 个汉字**,单行(现有中位 10–11 字) | 安全区只留一行,第二行会压进画面 19–27 px。一行容量:1280 宽约 51 字,405 宽(9:16)约 23 字,375 宽手机约 21 字 |
+| 3 | 单条长度 | **≤ 20 个汉字**,单行(现有中位 10–11 字) | 安全区只留一行,折成两行时字幕块越过安全线压进画面(1280 宽约 15 px,9:16 约 7 px;版面检查报「字幕超出安全区」)。一行容量:1280 宽约 51 字,405 宽(9:16)约 23 字,375 宽手机约 21 字 |
 | 4 | 单条停留 | **2.5–6 秒**(中位 3.3–4.0) | |
 | 5 | 读速 | **≤ 4.5 字/秒**(中位 2.3–3.2);停留 ≥ max(2.5, 字数 / 4.5),舒服的值是字数 / 3 | 超过 5.5 字/秒就读不完 |
 | 6 | 条数 | 内容段 3–5,列表段 2–4,卡片 1 | 平均约 4 秒一条,覆盖段长的 85–95% |
@@ -612,6 +628,7 @@ npm run check                   # 提交前总检:类型检查 + lint + 全部�
 | `FadeIn(group)` 整组出来 | `hide(group)`,子元素**不要**藏 | 子元素 opacity 为 0,组淡入了它也看不见 |
 | 组里成员逐个 `FadeIn` | 逐个 `hide(child)`,组不藏 | `listSegment` / `fadeSequence` 就是这样 |
 | `Create(m)` | `unrevealed(m)`(即 `m.setRevealFraction(0)`) | `Create` **不碰 opacity**:被 `hide` 过的要先 `m.opacity = 1`。`Annotation`、3D 网格、空 `Group` / `Layout`、少于 2 点的 `Polygon` 及含它们的组,Create 一开始就抛错(`Create 需要支持描边生长的对象……`),改用 FadeIn |
+| `Create` 图片、SVG 插画、3D 线条 | `unrevealed(m)` | `Picture` 从左往右擦出;`Illustration` 按部件错峰先描边再填色([6.12](#612-图片与-svg-插画));`Line3D` / `ParametricCurve3D` / `Axes3D` 按 3D 弧长生长([9.6](#96-3d-里的标注辅助线与坐标轴))。3D 网格仍不能 Create |
 | `makePlot` 的轴和曲线 | 已藏好(轴 opacity 0、曲线描边收起) | 用 `plotIntro`,或 `FadeIn(p.axes)` + `Create(p.curve)`;另加进 `p.plot` 的 `FunctionGraph` 要自己 `unrevealed` |
 | `Write(m)` | **不要藏**。不是第一拍又不能提前露:搭建时 `m.opacity = 0`,紧挨 `env.play(new Write(m))` 的上一行写 `m.opacity = 1` | `Write` 不改 opacity:藏着去写,写完还是看不见。它开始时自己会藏对象,中间不画帧 |
 | `Transform(src, target)`、`TransformMatchingTex(src, target)` | `hide(target)`,**两个都**进 `stage` | 替换语义:播完 src 留在场景里(opacity 0),之后对 target 做动画。任一方不在场景里,play 报错「源对象 / 目标对象不在场景里」 |
@@ -621,7 +638,7 @@ npm run check                   # 提交前总检:类型检查 + lint + 全部�
 | `AnimationGroup` / `LaggedStart` 里的入场 | 组是 t = 0 第一拍就不用藏,否则按上面各行藏 | 组起点让所有子动画同时开始,靠后启动的不会提前露。几个 `Write` 要错开,放进一个 `LaggedStart`,别连着几次 `env.play` |
 | `Indicate` / `Circumscribe` / `ColorTo` / `MoveTo` / `sweep` 改的对象 | 不藏 | 作用于已看得见的对象 |
 
-**检查**:`/?scene=<片>&preview=<段起点 + 0.1>`(段起点 = 前面各段 duration 之和;影片要已按 [2.3](#23-接进页面和工具) 注册)。预览不画白场、字幕和进度条:
+**检查**:`/?scene=<片>&storyboard=segments` 一次看每段的首帧(见 [5.9](#59-预览跳转安全区竖屏重建背景网格与-settheme)),或 `&preview=<段起点 + 0.1>` 看单帧(段起点 = 前面各段 duration 之和;影片要已按 [2.3](#23-接进页面和工具) 注册)。预览不画白场、字幕和进度条:
 除了正在入场的第一个动画,什么都不该有。再在每次入场前 0.1 秒各看一帧,该入场的对象必须还看不见。
 
 ### 3.5 动画节奏表
@@ -669,6 +686,7 @@ npm run check                   # 提交前总检:类型检查 + lint + 全部�
   ```
 
 - 字幕要对准扫动中的某一刻,就按缓动算:`sweep` 走过比例 p 的时刻 = 起点 + runTime × u,其中 3u² − 2u³ = p。中点 u = 0.5;走过 20% 在 u ≈ 0.29,80% 在 u ≈ 0.71。
+- 想要手写感(笔在急弯、拐角处放慢,直处加快):`new Create(m, { pace: 'curvature' })`,`Write` 同样的选项,开场曲线 `plotIntro(env, p, { curvePace: { pace: 'curvature' } })`。只重新分配笔速,`runTime` 不变,时长账照旧;缺省按弧长匀速。细则见 [7.3](#73-基础动画)「笔速」。
 
 ### 3.6 标准节拍:一个完整的内容段
 
@@ -804,7 +822,7 @@ env.checkpoint(); // playFit 走的是 scene.play,不检查取消,要补这一�
 | --- | --- |
 | 坐标系(下方放公式) | `makePlot` 宽 440–520 × 高 300–360,`at: { x: 0, y: -20 … -40 }` |
 | 坐标系(右侧放推导栏) | `at: { x: -100 … -150, y: 0 }`;竖屏 `{ x: 0, y: -170 }` |
-| 图下结论公式 | y **195–232**(多数 195–205),第二行 y ≈ 290 |
+| 图下结论公式 | y **195–232**(多数 195–205),第二行 y ≈ 290;公式顶离 x 轴刻度数字至少约 20(一个字高),否则版面检查报「压住刻度」 |
 | 侧栏 `sideColumn(scene, n)` | 横屏 `colX` 250,整列以 y = 0 居中(4 行:−105 / −35 / 35 / 105);竖屏 `colX` 0、首行 y 60;行距都是 70 |
 | 顶部标题 / 全局读数(h、误差) | y −120,label 26 / 右上角 `{ x: 160 … 170, y: -185 … -190 }` |
 | 跟点读数(`tangentProbe`) | 缺省切点上方 `{ x: 0, y: -40 }`;避让时改下方 `{ x: 0, y: 40 }` 或右上 `{ x: 70, y: -30 }` |
@@ -813,6 +831,9 @@ env.checkpoint(); // playFit 走的是 scene.play,不检查取消,要补这一�
 | 示意图 + 公式列 | 图在左 x ≈ −190…−250;公式在右 x ≈ 170–200(行距 100),或在下方 y 170 / 225 / 280(行距 55) |
 
 **避让。** 文字不能被线划掉、不能互挤:读数挪到切点下方,让收尾时 ξ 在切线上方;ξ 标签抬高一个字高,避开收尾的水平切线;标注摆进不被曲线横穿的空白区。检查**收尾那一帧**:扫动停下处、最后画出的线最容易压字。
+
+- 相对摆放别手算中心:长公式的宽度靠猜容易压到旁边的字([4.11](#411-配音驱动短片) 的算式就是按外接盒摆在「6」右边)。用 `nextTo(m, 参照, 'right', 40)`、`arrange([a, b, c], { direction: 'down' })` 按外接盒摆,竖屏放不下的长公式 `fitWidth(m, 宽)` 收窄(都从 `'../engine'` import,见 [6.9](#69-容器与排版))。
+- 摆完跑版面检查,人眼之前先让机器扫一遍出画、互压、压刻度、压字幕、竖屏字太小:没登记的文件跑 `node skills/film-authoring/scripts/check-film.mjs src/film/<片>.ts`(结果在「版面」提醒里),登记后跑 `npm run layout:check -- <片>`,见 [12.1](#121-内容测试-node-scriptstestmjs-content)。
 
 **背景方格。** 分段用 `lightTheme`:40 单位的淡网格加过**世界原点**的十字轴。坐标系放在 `{ x: 0, y: -20 }` 这类位置(或范围不关于 0 对称)时,画面上会有两套十字:
 要么像 [3.6](#36-标准节拍一个完整的内容段) 把对称的坐标系放在 `{ x: 0, y: 0 }`,要么用 `setTheme` 关掉(卡片、列表关不掉,全片要一致;现有影片都没关),见 [5.9](#59-预览跳转安全区竖屏重建背景网格与-settheme)。
@@ -935,6 +956,7 @@ await env.play(new Create(dxLine, { runTime: 0.8 }), new Circumscribe(formula, {
 - [ ] 所有对象都进了 `stage`(运镜段除外),会动、会变大的按最大包络取景;收尾帧文字不被线划掉、不互相挤,公式没有红字
 - [ ] 颜色:缺省墨色;用了颜色的同义同色、每段 ≤ 4 种,要强调的对象不是橙色
 - [ ] 9:16 竖屏逐段看过;左右并排的段有 `isNarrow` 分支,两支时间线一致
+- [ ] `npm run layout:check -- <片>`(还没登记时看 `check-film.mjs` 的「版面」提醒)没有 ✗ 错误级问题,! 提醒级逐条看过(或有理由)
 
 **代码与命令**
 
@@ -2429,25 +2451,27 @@ export const tplEpisodeFilm: Segment[] = [titleCard, outline, ...ch1, ...ch2, ..
 
 | t(秒) | 台词 / 画面 | 脚本 |
 | --- | --- | --- |
-| 0.30–4.00 | 「把台阶复制一份,倒过来拼上去。」台阶接上一段露着;1.05 复制品 FadeIn 0.6;2.20 转 180° 并移到台阶上 1.8 秒 | `untilMark('double-1', 'copy')`;`untilMark(…, 'flip')` + `runTime = max(1.2, remaining('double-1'))` |
+| 0.30–4.00 | 「把台阶复制一份,倒过来拼上去。」台阶接上一段露着;1.05 复制品 FadeIn 0.6;2.20 转 180° 并移到台阶上,铺到这句说完(1.8 秒) | `untilMark('double-1', 'copy')`;`untilMark(…, 'flip')` + `playUntil({ end: 'double-1', min: 1.2 }, 转, 移)` |
 | 4.25–7.80 | 「正好拼成一个五乘六的长方形。」6.75 外框 `Create` +「5」「6」FadeIn 0.8 | `untilMark('double-2', 'rect')` |
-| 8.05–13.25 | 「所以一加到五,等于五乘六除以二,十五。」算式 FadeIn 2.3,停 1,话说完再定格 0.6 | `runTime = max(0.8, remaining × 0.5)` |
+| 8.05–13.25 | 「所以一加到五,等于五乘六除以二,十五。」算式从开口起淡入,说到「十五」(11.85)正好出齐;停 1,话说完再定格 0.4 | `playUntil({ line: 'double-3', mark: 'fifteen' }, FadeIn)` |
 
 四种踩点写法(本片都用到了):
 
 | 要什么 | 写法 |
 | --- | --- |
-| 整句话都在画(分界线、通式) | `runTime: Math.max(下限, env.remaining(id))` |
-| 在这句(或某个词)之前画完(问题、算式) | `runTime: Math.max(1, env.remaining(id) * 0.8)`(算式用 × 0.5);对齐某个词就接 `untilMark` |
+| 整句话都在画(分界线、通式) | `await env.playUntil({ end: id, min: 下限 }, 动画)`;还没开口的句子用 `env.playThrough(id, 动画)`(先等开口,再画到说完) |
+| 在这句(或某个词)之前画完(问题、算式) | `playUntil({ end: id, lead: 0.5 }, 动画)`:说完前 0.5 秒画完;对齐某个词写 `playUntil({ line: id, mark: 'k' }, 动画)` |
 | 说到这个词就动(复制品、外框) | `await env.untilMark(id, 'k')` 然后播 |
-| 最后一句的强调撑满这句(5050) | `Indicate(x, { runTime: Math.max(0.6, env.remaining(id)) })` |
+| 最后一句的强调,之后静止到说完(5050) | `playUntil({ end: id, min: 0.6, max: 1.2 }, new Indicate(x))` |
+
+`playUntil(目标, ...动画)` 写的是「在哪儿收住」,时长由引擎按目标算:`clamp(目标 − lead − 现在, min, max)`,几个动画同时开始、按比例一起伸缩;画完(`max` 封顶或 `lead` 提前)就静止等到目标,**返回时正好在目标上**,后面不用再 `untilMark`。`min` 缺省是动画自己的时长(只拉长、不压缩)。草稿和配音按同一条规则算,不用估比例;时间不够时按 `min` 播,控制台告警一次 `[film] timedSegment「…」playUntil(…):…`。细则见 [5.5](#55-timedsegment按台词对齐)。
 
 <details>
 <summary>完整代码:<code>src/film/tplVoice.ts</code>(草稿 43.95 秒,4 段)</summary>
 
 ```ts
 // src/film/tplVoice.ts
-import { Create, FadeIn, Group, Indicate, LaggedStart, MoveTo, Polygon, Rectangle, RotateTo, Square, Write } from '../engine';
+import { Create, FadeIn, Group, Indicate, LaggedStart, MoveTo, Polygon, Rectangle, RotateTo, Square, Write, nextTo } from '../engine';
 import type { Segment } from './film';
 import { cardSegment, timedSegment } from './film';
 import { hide, isNarrow, stage, tex, unrevealed } from './helpers';
@@ -2499,7 +2523,7 @@ export const stairs = timedSegment(
 
     await env.untilLine('stairs-1');
     question.opacity = 1;
-    await env.play(new Write(question, { runTime: Math.max(1, env.remaining('stairs-1') * 0.8) }));
+    await env.playUntil({ end: 'stairs-1', lead: 0.5 }, new Write(question)); // 这句说完前 0.5 秒写完
     await env.untilMark('stairs-2', 'stairs');
     await env.play(new LaggedStart(columns.map((c) => new FadeIn(c, { runTime: 0.6 })), { lagRatio: 0.5 }));
     await env.wait(1);
@@ -2514,7 +2538,7 @@ export const double = timedSegment(
     lines: [
       { id: 'double-1', text: '把台阶<mark name="copy"/>复制一份,<mark name="flip"/>倒过来拼上去。' },
       { id: 'double-2', text: '正好拼成一个五乘六的<mark name="rect"/>长方形。' },
-      { id: 'double-3', text: '所以一加到五,等于五乘六除以二,十五。' },
+      { id: 'double-3', text: '所以一加到五,等于五乘六除以二,<mark name="fifteen"/>十五。' },
     ],
   },
   async (env) => {
@@ -2526,7 +2550,10 @@ export const double = timedSegment(
     const outline = new Rectangle(5 * U, 6 * U).moveTo(home).setStyle({ strokeWidth: 3 });
     const five = tex('5', 26, { x: home.x, y: home.y + 3 * U + 24 });
     const six = tex('6', 26, { x: home.x + 2.5 * U + 22, y: home.y });
-    const sum = tex('1+2+3+4+5 = \\dfrac{5 \\times 6}{2} = 15', 30, narrow ? { x: 0, y: 150 } : { x: 170, y: 0 });
+    const sum = tex('1+2+3+4+5 = \\dfrac{5 \\times 6}{2} = 15', 30, { x: 0, y: 150 }); // 竖屏:长方形下方
+    if (!narrow) {
+      nextTo(sum, six, 'right', 40); // 横屏:按外接盒摆在「6」右边 40 处(算式宽约 500,手算中心容易压到「6」)
+    }
     unrevealed(outline);
     hide(copy, five, six, sum);
     stage(env.scene, [steps, copy, outline, five, six, sum], 40); // 同时框住复制品的起点和终点
@@ -2534,12 +2561,12 @@ export const double = timedSegment(
     await env.untilMark('double-1', 'copy');
     await env.play(new FadeIn(copy, { runTime: 0.6 }));
     await env.untilMark('double-1', 'flip');
-    const t = Math.max(1.2, env.remaining('double-1'));
-    await env.play(new RotateTo(copy, Math.PI, { runTime: t }), new MoveTo(copy, home, { runTime: t }));
+    // 转 + 移同时开始,一起铺到这句说完(至少 1.2 秒)
+    await env.playUntil({ end: 'double-1', min: 1.2 }, new RotateTo(copy, Math.PI), new MoveTo(copy, home));
     await env.untilMark('double-2', 'rect');
     await env.play(new Create(outline, { runTime: 0.8 }), new FadeIn(five, { runTime: 0.8 }), new FadeIn(six, { runTime: 0.8 }));
     await env.untilLine('double-3');
-    await env.play(new FadeIn(sum, { runTime: Math.max(0.8, env.remaining('double-3') * 0.5) }));
+    await env.playUntil({ line: 'double-3', mark: 'fifteen' }, new FadeIn(sum)); // 说到「十五」时正好出齐
     await env.wait(1);
   },
 );
@@ -2577,16 +2604,16 @@ export const general = timedSegment(
 
     await env.untilLine('general-1');
     await env.play(new Create(box, { runTime: 1 }), new FadeIn(nName, { runTime: 1 }), new FadeIn(n1Name, { runTime: 1 }));
-    await env.play(new Create(edge, { runTime: Math.max(0.8, env.remaining('general-1')) }));
+    await env.playUntil({ end: 'general-1', min: 0.8 }, new Create(edge));
     await env.untilMark('general-2', 'half');
     rule.opacity = 1;
-    await env.play(new Write(rule, { runTime: Math.max(1, env.remaining('general-2')) }));
+    await env.playUntil({ end: 'general-2', min: 0.8 }, new Write(rule)); // 「一半」之后只剩 0.8 秒:允许压到 0.8
     await env.untilLine('general-3');
     plug.opacity = 1;
-    await env.play(new Write(plug, { runTime: Math.max(1, env.remaining('general-3') * 0.8) }));
+    await env.playUntil({ end: 'general-3', lead: 0.5 }, new Write(plug));
     await env.untilMark('general-4', 'answer'); // 答案等「答案是」之后再出,不抢在声音前
     await env.play(new FadeIn(answer, { runTime: 0.6 }));
-    await env.play(new Indicate(answer, { runTime: Math.max(0.6, env.remaining('general-4')) }));
+    await env.playUntil({ end: 'general-4', min: 0.6, max: 1.2 }, new Indicate(answer)); // 强调约 1 秒,静止到说完
     await env.wait(3); // 全片最后一帧,停 3 秒
   },
 );
@@ -2608,15 +2635,17 @@ export const tplVoiceFilm: Segment[] = [titleCard, stairs, double, general];
 
 **这个模板最容易犯的错**
 
-- **「剩余时间减常数」**:`env.remaining(id) - 1` 配音一快就 ≤ 0(按 0 处理并告警,动画跳到终态),一慢就对不上词。用 `remaining × 比例` 或等 mark;先 `untilLine` 再用 `remaining`,一律 `Math.max(下限, …)`。`env.line(id).start` / `.end` 是相对段首的时刻,不是时长。
+- **拿 `remaining` 算时长**:`env.remaining(id) * 0.8`、`env.remaining(id) - 1` 都是在猜 —— 草稿里看着对,换成配音就早了或晚了(减常数的配音一快就 ≤ 0,动画跳到终态),台词稿还会按草稿速度记下伸缩的时长。一律写成 `playUntil` / `playThrough` 的目标。`env.line(id).start` / `.end` 是相对段首的时刻,不是时长;草稿里还没开口的句子给的是预估,别拿来算时长。
+- **`playUntil` 里的动画自带长 `runTime`**:`min` 缺省等于它,`new Write(f, { runTime: 3 })` 就至少写 3 秒,配音一快就收不住(控制台告警;`voice:check` 报「动画收不住」或「动画时间不够」)。动画不写 runTime,允许压缩就写 `min`(本片「一半」之后只剩 0.8 秒,所以 `general-2` 写 `min: 0.8`)。
 - **`Write` 前藏了没抬回**:搭建时 `opacity = 0`,紧挨 `Write` 的前一行置 1。
 - **mark 写错**:`<mark name=k/>` 没引号不识别,还原样留在字幕里;`untilLine` 没声明的 id,这一段被跳过;台词 id 重复、空台词在 import 时就抛错。
 - **竖屏分支改了时间线**:草稿和 `voice:check` 只跑横屏,分支只改位置。
-- **`voice:check` 报「动画比时间表长 C 秒」**:把时间表里这一段的 `duration` 加长。
+- **手算长公式的位置**:算式约 500 宽,中心写死在 x = 170 时左端压到「6」(版面检查报 `✗ [横屏 1280×720] 文字互压`)。本片用 `nextTo(sum, six, 'right', 40)` 按外接盒摆;换了算式也不用重算。
+- **`voice:check` 报「动画比时间表长 C 秒」**:多半是最后一段动画用 `remaining` 定了长(台词稿按草稿速度记下了伸缩的部分)→ 改成 `playUntil`,重新导台词稿、重排;手写的时间表就把这一段的 `duration` 加长。
 
 ### 4.12 3D 直观片
 
-**定位**:用会转的立体讲一个空间事实。示例《1 : 2 : 3》:半径都是 r、高都是 2r 的圆锥、球、圆柱,用「截面处处相等」(祖暅原理)说明球 = 圆柱 − 双锥,体积之比 1 : 2 : 3。适合立体几何、旋转体、截面论证、曲面形状;不适合要坐标轴和精确读数的图(没有 3D 坐标轴,要画见 [9.6](#96-3d-里的标注辅助线与坐标轴))。
+**定位**:用会转的立体讲一个空间事实。示例《1 : 2 : 3》:半径都是 r、高都是 2r 的圆锥、球、圆柱,用「截面处处相等」(祖暅原理)说明球 = 圆柱 − 双锥,体积之比 1 : 2 : 3。适合立体几何、旋转体、截面论证、曲面形状。要坐标轴、空间曲线、钉在顶点上的字母,用 [9.6](#96-3d-里的标注辅助线与坐标轴) 的 `Axes3D`、`Line3D`、`ParametricCurve3D`、`Anchor3D`(完整例子是那里的《圆柱螺旋线》)。
 
 **目标时长**:示例 4 段 Σ 50.8 秒。
 
@@ -2637,7 +2666,7 @@ export const tplVoiceFilm: Segment[] = [titleCard, stairs, double, general];
 | 12.1–18.9 | `sweep` h:−0.45r → 0.8r,6 秒,每帧 `resample([h])`;停 0.8 | 13.2–18.6「换个高度,两边面积始终相等」 |
 | 18.9–24.4 | 结论 V球 = V圆柱 − V双锥 FadeIn 1.5,停 4 | 18.9–24.2「祖暅原理:体积也相等」 |
 
-3D 要点(见 [§9](#9-3d)):y **向下**、z 指向观众,单位是世界单位;立体都以 y 为轴,`Cone` 尖顶朝上。`Projection3D({ rotX, rotY, viewDistance, nearRatio })` 缺省 −0.45 / 0.6 / 700 / 0.2,几个网格共用它,一个 `Orbit3D(view, 圈数, { runTime })` 转整组。没设 `fill` 画线框。
+3D 要点(见 [§9](#9-3d)):y **向下**、z 指向观众,单位是世界单位;立体都以 y 为轴,`Cone` 尖顶朝上。`Projection3D({ rotX, rotY, viewDistance, nearRatio })` 缺省 −0.45 / 0.6 / 700 / 0.2,几个网格共用它,一个 `Orbit3D(view, 圈数, { runTime })` 转整组,俯仰、换方位用 `ViewTo`。没设 `fill` 画线框。3D 线条、坐标轴、字母和网格放进同一个 `Space3D`(9.6):视角、绘制顺序、遮挡都自动对好。
 
 <details>
 <summary>完整代码:<code>src/film/tpl3d.ts</code>(50.8 秒,4 段)</summary>
@@ -2799,13 +2828,15 @@ export const tpl3dFilm: Segment[] = [titleCard, trio, slices, outroCard];
 1. **换立体**:改 `TRIO` 的 `make`,可选 `Cube`、`Cuboid`、`Pyramid`、`Tetrahedron`、`TriangularPrism`、`Cylinder`、`Cone`、`Sphere`,或 `ParametricSurface`(预设 `sphereParam`、`torusParam`、`mobiusParam`、`kleinParam`)。旋转体写 `(u, v) => ({ x: S * f(v) * Math.cos(u), y: S * v, z: S * f(v) * Math.sin(u) })`,S 是一个数学单位的世界长度(本片 R = 80),u 缺省取 [0, 2π]。
 2. **会变的曲面**:采样函数第三个参数是 `params`,构造时给 `params: [初值]`,之后 `resample([新值])`(`sweep` 驱动,或 `ParamMorph(曲面, [终值], { runTime })`)。
 3. **视角**:`rotX` −0.3 到 −0.5 最好读(0 是平视,底面压成线;绝对值超过约 0.8 高度被压扁);方的立体 `rotY` 取 0.4–0.6,露出两个侧面。竖屏由 `slot(narrow, i)` 改成竖排。
+4. **加坐标轴、辅助线和字母**:每个立体各放进一个 `Space3D`(几个空间可以共用同一个 `view`),立体和它的 `Axes3D` / `Line3D` / `Anchor3D` 都留在空间原点,摆到 `slot` 时挪空间、不挪立体;高线、半径用 `Line3D`(在体内的部分自动画虚线),顶点字母用 `Anchor3D(tex('A', 24), 顶点, { away: 中心 })`,见 [9.6](#96-3d-里的标注辅助线与坐标轴)。
 
 **这个模板最容易犯的错**
 
-- **对网格用 `Create`**:开始就抛错,这一段被跳过;3D 网格一律 `FadeIn`。
+- **对网格用 `Create`**:开始就抛错,这一段被跳过;3D 网格一律 `FadeIn`(3D 线条、坐标轴、字母可以 `Create`)。
 - **视角没共享**:`Orbit3D` 只转共用那个 `Projection3D` 的网格;共用后对任何一个播 `Spin3D` 也会带着整组转。
 - **用 `position` 拼一个立体**:每个网格以自己的原点为灭点,同一立体的零件放同一位置,错开要改顶点或采样函数。
 - **网格之间不遮挡**:后 add 的盖在上面;截面半透明,先 add 立体再 add 截面。
+- **线条、字母和立体对不上**:各自以自己的原点为灭点 → 放进同一个 `Space3D` 并留在原点;不用 `Space3D` 时网格先 add、线后 add,否则线的可见部分被填色网格盖住。
 - **转起来出画**:取景只量一次,非旋转体转起来会变宽。用 `stage` 的第 4 个参数放一个正方形框,边长 ≈ 2.3 × 最远顶点到原点的距离(`new Cube(70)` 配 `new Rectangle(140, 140)`)。
 - **方格底纹和原点十字**从立体背后穿过:3D 段开头调 `clean(env)`。
 
@@ -2829,7 +2860,7 @@ export const tpl3dFilm: Segment[] = [titleCard, trio, slices, outroCard];
 | 12 | 迭代构造(牛顿法) | 先算好每步的切线、垂线、落点;每步 `Create(切线, 1.5)` + `FadeIn(垂线、落点, 1)`,停 1 | 19–20 | — |
 | 13 | 习题讲解 | `quizSegment` | 17.9 | [4.8](#48-习题讲解片) `question` |
 | 14 | 集合 / 映射示意图 | `Ellipse` / `Circle` / `Arrow` 用 `Create` 1–1.2,标签 `FadeIn` 0.8–1;关注的集合填 `#dbeafe` | 9–10.5 | — |
-| 15 | 按台词踩点 | `timedSegment` + `untilLine` / `untilMark` / `remaining` | 每句 3–6 | [4.11](#411-配音驱动短片) `double` |
+| 15 | 按台词踩点 | `timedSegment` + `untilLine` / `untilMark`;跟着台词伸缩的动画 `playUntil` / `playThrough` | 每句 3–6 | [4.11](#411-配音驱动短片) `double` |
 | 16 | 高亮圈注 | `Indicate` / `Circumscribe`(可带 `{ part }`,公式里 `\class{名}{…}`);持久变色 `ColorTo` | 各约 1 | [4.8](#48-习题讲解片) `quizSegment`、`solution`;[4.11](#411-配音驱动短片) `general` |
 | 17 | 黎曼和加细 | `RiemannRectangles` + `RiemannTo({ n })` + 读数 `FadeTransform`,每次细分后停 1.5–2 | 18–20 | [4.6](#46-极限与逼近片) `squeezeSegment` |
 | 18 | 运镜分镜 / 3D 旋转 | `Promise.all([scene.playFit(对象, { pad, runTime: 2–2.2 }), env.play(…)])` 之后 `env.checkpoint()`(见 [8.3](#83-播放语义));`Projection3D` + `Orbit3D` | 每镜 2–2.2;环绕 2.4–6 | [4.12](#412-3d-直观片) `trio` |
@@ -2924,6 +2955,7 @@ directedSegment(
 - 不用不带种子的 `Math.random()`;要随机就用固定种子的伪随机,每次进 `direct` 时重置。
 - MObject 在 `direct`(或 `entries` 工厂)里新建:离线导出会另起一份实例和预览同时跑,模块作用域的对象会被两边共用。常量、函数、纯数据放模块作用域没问题。
 - 横竖屏分支时间线完全相同,只改位置和大小(内容测试和配音草稿只跑横屏)。
+- 图片、SVG 文件在**影片模块顶层** `await loadImage / loadSvg / preloadAssets` 取好,`direct` 里只同步构造;**不要在时间线中途 `await` 加载**(段内时钟停着、外面的时钟在走,预览、跳转、导出全错位),见 [6.12](#612-图片与-svg-插画)。
 
 下例用上了 `options` 三个字段、关网格、竖屏分支、`plotIntro` / `tangentProbe` / `sweep`、读数的取景包络和时长账(16.7 秒)。分段放进 `Segment[]`(`refDirectedFilm`)、按 [2.3](#23-接进页面和工具) 注册后才能看。
 
@@ -3027,13 +3059,15 @@ cardSegment(o: CardSegmentOptions): Segment
 | `unrevealed` | `(...objects: MObject[]) => void` | `setRevealFraction(0)`。 | `Create` 之前收起描边(`Create` 不改不透明度)。 |
 | `fadeIns` | `(objects: readonly MObject[], runTime: number) => FadeIn[]` | 每个对象一个 FadeIn。 | 一组对象同时淡入:`await env.play(...fadeIns(xs, 1.2))`,耗时等于 runTime。 |
 | `stage` | `(scene: Scene, objects: readonly MObject[], pad: number, fitExtra: readonly MObject[] = []) => void` | 执行 `scene.add(...objects)` 和 `fitObjects([...objects, ...fitExtra], pad)`。 | 搭景最后一步。`fitExtra` 只参与取景、不进场景,当运动全程的包络占位。 |
+| `picture` | `(src: string \| ImageAsset, width: number, at?: Point) => Picture` | `new Picture(src, { width })`(高按原图比例),移到 `at`。`src` 是顶层 `await loadImage(…)` 拿到的资源或已预加载的路径。 | 图片;只给高、限定框用 `new Picture`,见 [6.12](#612-图片与-svg-插画)。 |
+| `illustration` | `(src: string \| SvgAsset, width: number, at?: Point) => Illustration` | `new Illustration(src, { width })`,移到 `at`。`src` 是 SVG 源码(不用预加载)、`loadSvg` 的资源或已预加载的路径。 | SVG 插画;部件用 `.part(id)` 取,见 [6.12](#612-图片与-svg-插画)。 |
 
 **坐标系**
 
 | 导出 | 签名 | 行为与缺省 | 时长 |
 |---|---|---|---|
 | `makePlot` | `(o: { xRange: [n, n]; yRange: [n, n]; width: number; height: number; fn: RealFunction; samples?: number; at: Point }) => { plot: Group; axes: Axes; curve: FunctionGraph; W(x, y): Point }` | `plot = Group(axes, curve)`,移到 `at`;`samples` 缺省 200;`width` / `height` 是世界单位。**坐标轴初始藏着(opacity 0)、曲线初始收起**:用 `plotIntro`,或 `FadeIn(p.axes)` + `Create(p.curve)`。`W` 把数学坐标换成世界坐标,每次读 `plot.position`,不管缩放旋转。另加进 `p.plot` 的曲线要自己 `unrevealed`。 | 不占时间 |
-| `plotIntro` | `(env: SegmentEnv, p: PlotEnv, options?: { axesRunTime?: number; curveRunTime?: number; holdSeconds?: number; with?: readonly Playable[] }) => Promise<void>` | 在同一个 `env.play` 里放 `FadeIn(axes, axesRunTime = 1)`、`Create(curve, curveRunTime = 2.5)` 和 `with` 里的动画;然后如果 `holdSeconds`(缺省 1)> 0,就 `wait(holdSeconds)`。 | `max(axesRunTime, curveRunTime, with 各自的 runTime) + holdSeconds`,缺省 **3.5 秒**。 |
+| `plotIntro` | `(env: SegmentEnv, p: PlotEnv, options?: { axesRunTime?: number; curveRunTime?: number; curvePace?: PaceOptions; holdSeconds?: number; with?: readonly Playable[] }) => Promise<void>` | 在同一个 `env.play` 里放 `FadeIn(axes, axesRunTime = 1)`、`Create(curve, curveRunTime = 2.5)` 和 `with` 里的动画;然后如果 `holdSeconds`(缺省 1)> 0,就 `wait(holdSeconds)`。`curvePace`(如 `{ pace: 'curvature' }`)交给曲线的 `Create`,见 7.3「笔速」;缺省匀速。 | `max(axesRunTime, curveRunTime, with 各自的 runTime) + holdSeconds`,缺省 **3.5 秒**。 |
 
 **时间线**
 
@@ -3085,12 +3119,15 @@ timedSegment(options: TimedSegmentOptions, direct: (env: TimedEnv) => Promise<vo
 |---|---|
 | `untilLine(id)` | 等到这句开口;已开口过的立即返回。 |
 | `untilMark(lineId, mark)` | 等到标记的那个词。 |
+| `playUntil(目标, ...动画)` | 播一组动画,在目标时刻收住,再静止等到目标;**返回时正好在目标上**(剩的不到 `min` 时在调用时刻 + `min`)。目标三选一:`{ start: id }` 这句开口、`{ end: id }` 这句说完、`{ line: id, mark: 'k' }` 说到这个词。选项:`min` 最短秒数(缺省 = 这组动画自己的时长,再与 `max` 取小:只拉长、不压缩)、`max` 最长秒数(缺省不限;到了就停,静止等)、`lead` 提前量(缺省 0:在目标前 `lead` 秒收住)。时长 = `clamp(目标 − lead − now, min, max)`;几个动画同时开始,按各自 runTime 的比例一起伸缩;不带动画就是等到目标。 |
+| `playThrough(id 或 { line, min, max, lead }, ...动画)` | 整句都在画:这句还没踩到就先等它开口(`untilLine`),再 `playUntil({ end: id })`;已经踩到(等过这句、它的标记或更靠后的句子)就直接画到说完。 |
 | `now()` | 本段已播秒数,即 `scene.getElapsed()`。 |
-| `line(id)` | `{ start, end, duration }`;草稿模式下没排到的句子给预估值。 |
-| `remaining(id)` | `max(0, 这句结束时刻 − now)`,常用来当 runTime。 |
+| `line(id)` | `{ start, end, duration }`,只读查询;草稿模式下没排到的句子给不落定的预估(会被之后的动画往后推),别拿它算时长。 |
+| `remaining(id)` | `max(0, 这句结束时刻 − now)`,兼容保留的只读查询。跟台词对齐的动画时长用 `playUntil` / `playThrough`,别拿它乘比例、减常数。 |
 
 **构造时校验**:id 非空;台词 id 非空且不重复;去掉标记后台词不空;同句标记不重名;`draftRate` 是正的有限数。不满足时**模块 import 就抛错**,整部片子加载失败(「场景加载失败:…」)。
-**运行时报错**(`done` reject,本段被跳过):`untilLine` / `untilMark` / `line` / `remaining` 用了没声明的台词 id(`timedSegment「name」没有声明台词「id」`),或者标记名不存在。
+**运行时报错**(`done` reject,本段被跳过):`untilLine` / `untilMark` / `playUntil` / `playThrough` / `line` / `remaining` 用了没声明的台词 id(`timedSegment「name」没有声明台词「id」`),或者标记名不存在;`playUntil` 的目标不是恰好三选一(`playUntil 的目标要三选一:…`);`min` / `lead` 不是非负有限数、`max` 是负数或 NaN、`min` 大于 `max`(`playUntil 的 min(2)大于 max(1)`,`playThrough` 的同类错误写 playThrough);`playThrough` 带了 `mark`(`playThrough 要一句台词的 id(整句);对齐标记用 playUntil({ line, mark })`);同一个动画实例在一次调用里传了两次。
+**时间不够不报错**:目标已经过了,或离目标不到 `min + lead` 时按 `min` 播 —— 剩的不到 `min` 就比目标晚收住;只是不够 `lead` 时仍在目标前收住,只是提前量不足(差 0.05 秒以内不算)。每个目标只在控制台告警一次:`[film] timedSegment「name」playUntil(台词「x」说完):到目标(A 秒)只剩 B 秒,动画至少要 C 秒;动画按 C 秒播,比目标晚 D 秒收住(…)`(`playThrough` 就写 playThrough;目标已过时是「目标在 A 秒,调用时已经 B 秒(目标已经过了)」;只差提前量时结尾是「提前量只剩 E 秒」)。干跑排草稿时不告警;`voice:script` 列成提醒,`voice:check` 按时间表报(见 [10.6](#106-校验报错与提醒))。
 
 **时长怎么定。** 影片加载时,`filmEntry` 调用 `prepareVoice`:
 
@@ -3099,9 +3136,11 @@ timedSegment(options: TimedSegmentOptions, direct: (env: TimedEnv) => Promise<vo
   - 每句时长 `estimateSpeech(text, draftRate)` = `max(0.8, 字数 / draftRate + 停顿)`:不计空白,`,，、;；:：` 各加 0.15 秒,`。.!！?？…` 各加 0.3 秒(数字里的 `.` 也算),其余每个字符算 1 字。
   - 按声明顺序排,开口时刻 = max(脚本走到提示点的时刻, 上一句结束 + 0.25);脚本没等的句子接在上一句后。
   - 标记落在 `开口 + estimateSpeech(标记前文字, draftRate, 0)`,不超过句尾;脚本迟到且这句是最后排下的一句时,它和其后的标记连同句尾一起后挪。
+  - `playUntil` 的目标也按「尽早」规则定,不是估:`{ start: id }` 的句子还没排到就排在 max(调用时刻 + `min` + `lead`, 上一句结束 + 0.25),那句等动画;`{ end }` / `{ line, mark }` 落在还没踩到的句子上(它和它后面的句子都还没被 until / playUntil 过),那句在调用时开口(不等,也不早于上一句结束 + 0.25),台词稿里记一个开口提示点;标记来不及就照上一条后挪,句尾不为动画后挪(动画比这句长就告警)。
+  - 交给过脚本的时刻(`untilMark` 等到的标记、`playUntil` 的句尾 / 标记)不再挪,之后来晚的提示点就算来晚:草稿排完后按草稿时间重跑,每个提示点、每段动画的时长都和干跑时一样。
   - `direct` 返回后未说的句子依次排完,本段停到 `max(now, 最后一句结束 + 0.6)`;按时间表播时停到 `max(now, 表里的 duration)`,脚本比表长会超出声明时长,`voice:check` 会报。
 
-**脚本写法**(`remaining` 兜底、踩标记、不写「句尾减常数」)见 [10.2](#102-作者这一侧两种分段怎么配音)。**收尾停留要自己写**:草稿末句后只留 0.6 秒,有时间表时在表里的 `duration` 处结束,所以 `direct` 末尾加 `await env.wait(3)`(3–6 秒);照抄 `src/film/voiceDemo.ts` 会每段戛然而止。
+**脚本写法**(`playUntil` / `playThrough` 定时长、踩标记、别拿 `remaining` 算时长)见 [10.2](#102-作者这一侧两种分段怎么配音)。**收尾停留要自己写**:草稿末句后只留 0.6 秒,有时间表时在表里的 `duration` 处结束,所以 `direct` 末尾加 `await env.wait(3)`(3–6 秒);照抄 `src/film/voiceDemo.ts` 会每段戛然而止。
 
 **测试。** 没经过 `prepareVoice` 的 timedSegment,`duration` 只是按字数排的估计(没算等提示点),实际常超出 ±0.25 秒(演示片「割线逼近切线」声明 14.53、实际 14.78 秒),还会 `console.warn`「没有经过 prepareVoice」。所以含它的片子**不要加进 `content.test.ts`**,照 `src/film/voiceDemo.test.ts` 单独写测试,先 `prepareVoice` 再逐段干跑。把 `myFilm` 换成你的片子,存成 `src/film/<名字>.test.ts`(`src/` 下的 `.test.ts` 自动发现):
 
@@ -3144,9 +3183,9 @@ export default suite('我的配音片', [
 ]);
 ```
 
-只跑它:`node scripts/test.mjs <名字>`(按路径子串匹配)。它审草稿;有了真实时间表再跑 `npm run voice:check -- <voiceId>`。
+只跑它:`node scripts/test.mjs <名字>`(按路径子串匹配)。它审草稿;有了真实时间表再跑 `npm run voice:check -- <voiceId>`。`playUntil` 时间不够只写控制台(`[film] …`),这份测试拦不住;要拦就照 `src/film/voiceDemo.test.ts`,跑之前换掉 `console.warn`、收集起来断言为空。
 
-完整的配音分段示例见 [10.2](#102-作者这一侧两种分段怎么配音) 的 `appxVoice.ts` 和 [4.11 配音驱动短片](#411-配音驱动短片)。
+配音分段的写法见 [10.2](#102-作者这一侧两种分段怎么配音) 的 `appx-voice` 例子(片段),完整能跑的配音片见 [4.11 配音驱动短片](#411-配音驱动短片)。
 
 ### 5.6 影片选项与控制器
 
@@ -3223,11 +3262,62 @@ export default suite('我的配音片', [
 - `|实际时间线 − duration| ≤ 0.25` 秒。
 - 字幕:`start ≥ 0` 且 `end > start`;按时间排序、不重叠(首尾相接可以);`end ≤ min(duration, 实际时间线) + 0.05`。
 
-**不查**:竖屏分支(含其时间线)、TeX 写错(画成红字,不抛错不打日志;未定义的命令连 `tex.error` 都是 null)、画面重叠、先藏后揭漏写、字幕长度和语速、数学对错。这些要在 `?preview=` 里逐段看。失败输出和修法见 [2.5](#25-跑检查)、[12.1](#121-内容测试-node-scriptstestmjs-content)。
+**不查**:竖屏分支(含其时间线)、TeX 写错(画成红字,不抛错不打日志;未定义的命令连 `tex.error` 都是 null)、画面重叠、先藏后揭漏写、字幕长度和语速、数学对错。这些要在 `?preview=` 里逐段看(出画、互压、压字幕、竖屏字太小可以先用 `npm run layout:check -- <影片>` 扫一遍,见 [12.1](#121-内容测试-node-scriptstestmjs-content))。失败输出和修法见 [2.5](#25-跑检查)、[12.1](#121-内容测试-node-scriptstestmjs-content)。
 
 ### 5.9 预览、跳转、安全区、竖屏重建、背景网格与 setTheme
 
-**单帧预览** `/?scene=<key>&preview=<秒>`:只接受非负有限数,超过片尾停在最后一帧。**只画主画面**(无字幕条、进度条),页面显示「静态预览 Ns · 改 ?preview= 切帧」,窗口尺寸变化约 120 ms 后重画。它只挂目标段,按 1/30 秒一步(不绘制)快进到段内偏移再画,步进同离线导出,所以主画面和成片逐像素一致。程序里用 `previewFrameAt`(见 [5.6](#56-影片选项与控制器))。
+**故事板** `/?scene=<key>&storyboard[=<取帧>]`:一页铺出一组缩略图,每张按**导出成片**合成 —— 主画面 + 段首白场 + 字幕 + 带章名的进度条,与离线导出同一套合成和样式,只是缩小。点缩略图打开同一时刻的单帧预览。只对影片条目(`filmEntry` 注册的)有效,演示场景忽略这个参数照常播放;地址里同时有 `preview` 时按单帧预览。
+
+| `storyboard=` 写什么 | 取哪些帧 |
+| --- | --- |
+| 不写值(`&storyboard`)或空 | 缺省 24 张:全片(Σ `duration`)等分 24 份,取每份的中点 |
+| 一个纯整数 `n`,如 `12` | 均匀取 n 张,同上。**只有这种写法是张数**,页头每次提醒「要看第 12 秒那一帧,写 12s 或 0:12」;`0` 按 24 张 |
+| `segments`(或 `segment`,不分大小写) | 每段三张:段首 +0.7 秒、段中、段尾 −0.3 秒;与前一张相距不到 0.2 秒的去掉,约 1.8 秒以下的短段只剩一两张 |
+| 时刻列表,如 `3,10.5,1:05.5` | 只出列出的时刻,按升序排。分隔符 `,` `;` `、` 或空格(地址里的 `+` 就是空格);单项写 `12.5`、`12.5s`、`.5` 或 m:ss 的 `1:05.5`(秒 < 60);只列一个时刻时写 `10s` / `0:10` / `10,` |
+
+- 中文输入法打的全角字符照认:`１：０５，４２ｓ` = `1:05,42s`,`ｓｅｇｍｅｎｔｓ` 也行。
+- 认不出的项(`abc`、负数、`1e3`、`1:75`)丢掉,页头点名「“abc” 不是时刻(……),已忽略」;一个能用的都没有就按缺省 24 张。写错不会退回正常播放。
+
+| 取帧规则 | 说明 |
+| --- | --- |
+| 时刻的尺子 | 全片秒 = 各段 `duration` 累加,不含转场,与 `?preview=` 相同;正好落在段界的时刻算下一段的 0 秒 |
+| 帧网格 | 段内偏移取整到 1/30 秒,与单帧预览同一步长:点进去的 `?preview=` 画的就是这张的主画面 |
+| 白场 | 均匀取的帧落在段首 0.7 秒(转场 0.6 + 0.1)以内时推到 0.7 秒;时刻列表不推,照写的画,标 `白场 N%` |
+| 超出片长 | 按片尾画,标 `超出片长(Xs),按片尾`,页头也提示 |
+| 重复 | 取整后落在同一帧的合并,页头提示「k 帧落在同一时刻,已合并」 |
+| 上限 200 张 | 均匀取:按 200 张均匀取;时刻列表:只留前 200 个,提示从哪一刻起没出;`segments`:先去最短几段的段中帧、再去段尾帧,每段的段首帧留到最后,提示写明哪些段去了哪一帧 |
+
+| 页面上 | 内容 |
+| --- | --- |
+| 工具条 | 画幅按钮 + 徽标「故事板 · 改 &storyboard= 换帧」 |
+| 页头 | `故事板 · <片名> · N 帧 · 按 W×H 排版 · 渲染中 k/N`,出完改成 `已出齐 N 帧,用时 x.x 秒`(有失败的:`已出完 N 帧(k 帧失败,原因见说明)…`);右边 `下载整张 PNG`,出完才能点 |
+| 页头下的黄字列表 | 解析和取帧的提示(见上) |
+| 缩略图 | 长边 640 px(超过 48 张时 400 px);按段顺序出图,没出的半透明 |
+| 缩略图下三行 | `1:05.3 · 第 3/35 段 · 段名` / `段内 3.2s / 11.7s` + 黄字标记 / 字幕原文(没有写 `(无字幕)`;超过两行截断,悬停看全文) |
+
+| 黄字标记 | 意思 |
+| --- | --- |
+| `白场 N%` | 这一刻段首白场还没褪完(N ≥ 2 才标),成片里也这么白 |
+| `超出片长(Xs),按片尾` | 列出的时刻超过片长 |
+| `脚本 Xs 就结束了(声明 Ds)` | 时间线比 `duration` 短,没走到这一刻;画面停在结束那一刻,同段之后几张也是 |
+| `脚本超过声明的 Ds(到 Xs 还没结束)` | 这段最后一张离段尾不超过 0.3 秒时,出完再推到 `duration` + 0.25 秒,脚本还在跑(`segments` 每段都查) |
+| `出错:…` | 脚本在这一刻之前抛过错(照样出图);`出错:分段启动失败:…` 是起播就抛,整段的格子都是灰的 |
+
+- **排版尺寸** = 当前画幅下播放器画布会有的 css 尺寸(`全屏` 就是窗口);换画幅、改窗口大小,约 200 ms 后整页重画,缩略图的链接跟着带上新画幅。
+- **代价**:每段只挂一次,从 0 按 1/30 秒一步(不绘制,每步让出主线程,页面不卡)推到这段最后一张,整页约「各段最后一张的段内秒数之和 × 30」步,`segments` 差不多是把全片快进一遍。先等网页字体就绪再画。
+- **与成片的差别**:段尾 0.6 秒的淡出没有对应的全片时刻,故事板里没有;配音不出声(时间表定的时长、字幕照用)。
+- **下载整张 PNG**:标题「片名 · 故事板 · N 帧」+ 缩略图网格(横图 6 列、竖图 8 列)+ 每张三行说明(太长截成 `…`),深色底;超过约 1600 万像素或单边 16384 时整体缩小;没出成的帧画灰块。文件名 `<键>-storyboard-<画幅>-<年月日>-<时分秒>.png`。
+
+**单帧预览** `/?scene=<key>&preview=<秒>`:只接受非负有限数,超过片尾停在最后一帧。**只画主画面**(无字幕条、进度条),页面显示「静态预览 Ns · 改 ?preview= 切帧」,窗口尺寸变化约 120 ms 后重画。它只挂目标段,按 1/30 秒一步(不绘制)快进到段内偏移再画,步进同离线导出,所以主画面和成片逐像素一致。程序里用 `previewFrameAt`(见 [5.6](#56-影片选项与控制器))。故事板点进来的地址去掉了 `storyboard`,写上 `preview=<秒>`(能还原到同一帧的最短小数),其余参数(`scene`、`aspect`……)原样保留;浏览器「返回」回到故事板。
+
+**画幅参数** `&aspect=`:
+
+| 值 | 等于点 |
+| --- | --- |
+| 不写 / `full` / 认不出(区分大小写,`W9H16` 认不出) | `全屏` |
+| `w16h9` / `w4h3` / `w9h16` | `16:9` / `4:3` / `9:16` |
+
+播放、单帧预览、故事板都认。点工具条的画幅按钮会把它写回地址(替换当前历史记录,不新增一条;`全屏` 时删掉参数),所以刷新、从单帧预览「返回」故事板都还是这个画幅。竖屏逐段检查:`/?scene=<key>&storyboard=segments&aspect=w9h16`,或单帧 `/?scene=<key>&preview=<秒>&aspect=w9h16`。
 
 **段内跳转**:点进度条跳到对应秒(`seekToTime`)。进度条有焦点时:←/↓、→/↑ 按段跳,PageUp / PageDown 按章跳(落在 `marker: 'chapter'` 的段),Home / End 首段 / 末段,空格或 K 暂停。
 
@@ -3321,7 +3411,7 @@ m.setRevealFraction(0);       // 描边生长比例,null = 完整,0 = Create 之
 | 图元 | 构造(缺省值) | 可写字段 / 备注 | `Create` 怎么长 |
 | --- | --- | --- | --- |
 | `Circle` | `new Circle(radius = 50)` | `radius` | 从 12 点钟顺时针 |
-| `Ellipse` | `new Ellipse(radiusX = 60, radiusY = 40)` | `radiusX`、`radiusY` | 同上 |
+| `Ellipse` | `new Ellipse(radiusX = 60, radiusY = 40)` | `radiusX`、`radiusY` | 同上,按角度扫(尖端慢),不看 `pace` |
 | `Rectangle` / `Square` | `new Rectangle(width = 120, height = 80)` / `new Square(size = 90)` | `width`、`height`;没有圆角 | 从左上角顺时针 |
 | `Line` | `new Line(start, end)` | `start`、`end` | 从 start 到 end |
 | `Arrow` | `new Arrow(start, end)` | `start`、`end`、`headLength = 14`、`headWidth = 10`(字段,不是构造参数) | 箭头跟着笔尖走 |
@@ -3582,9 +3672,9 @@ const blob = new SvgPath(d).setStyle({ fill: '#fde68a' });   // 也接受 SVG �
 
 路径工具(`PathData` 视为不可变):`PathBuilder` 的 `moveTo` `lineTo` `quadTo(cx, cy, x, y)` `cubicTo(c1x, c1y, c2x, c2y, x, y)` `arc(cx, cy, r, a0, a1, anticlockwise = false)`(角度顺时针)
 `rect(x, y, w, h)` `close()` → `build()`;`parseSvgPath(d)`、`polylinePath(points, closed = false)`、`transformPath(path, [a, b, c, d, e, f])`、`pathBounds`、`pathLength`、
-`partialPath(path, from, to)`(按弧长比例截取)、`alignPaths` / `lerpPath`(变形)、`drawPath`。
+`partialPath(path, from, to)`(按弧长比例截取)、`revealPartial(path, f, pace)`(按笔速截前一截,见 7.11)、`alignPaths` / `lerpPath`(变形)、`drawPath`。
 
-**自定义 `PathShape`**:子类只给几何,填充、描边、虚线、按弧长的 `Create`、包围盒、`Transform` / `Write` 由基类处理。
+**自定义 `PathShape`**:子类只给几何,填充、描边、虚线、按弧长的 `Create`(含笔速 `pace`)、包围盒、`Transform` / `Write` 由基类处理。
 
 ```ts
 class Wave extends PathShape {
@@ -3601,7 +3691,7 @@ class Wave extends PathShape {
 }
 ```
 
-可选 `revealPath(f)` 自定义 `Create` 的长法。完全自定义的 `MObject`:实现 `protected drawShape(ctx, style)`,按需覆盖 `getBox(ctx?)`、`getCullRadius()`、
+可选 `revealPath(f)` 自定义 `Create` 的长法(覆盖后不再跟随 `pace`;要跟随就返回 `revealPartial(路径, f, this.getRevealPace())`)。完全自定义的 `MObject`:实现 `protected drawShape(ctx, style)`,按需覆盖 `getBox(ctx?)`、`getCullRadius()`、
 `supportsReveal`(配合 `this.revealed()`)、`pathLayers(style)`(参与 `Transform` / `Write`)。
 构造里的默认样式用 `setDefaultStyle(...)`,**不要**用 `setStyle`(会把键锁死,容器再也改不动)。
 
@@ -3612,30 +3702,35 @@ class Wave extends PathShape {
 - **组的原点不是中心**:`moveTo` / `MoveTo` / `ScaleTo` / `RotateTo` 都作用于原点(缺省 (0, 0)),内容偏在一侧时 `ScaleTo(g, 2)` 会把整组推走。
   搭组时让内容围着 (0, 0) 摆,或用下面的 `centerAt`。(`Indicate` / `Wiggle` / `Flash` 绕盒子中心。)把组自己或祖先加进来会报错。
 
-**没有 `arrange` / `next_to` / `to_edge`**。盒中心(父坐标)= `position + box.center × scale`,半宽 = `box.size.w × scale / 2`(没旋转时)。可以原样复制:
+**排版助手**(Manim 的 `next_to` / `align_to` / `arrange`,从 `'../engine'` import):全按**视觉外接盒**算、只平移(`fitWidth` / `fitWithin` 改 `scale`),组的原点不在中心也照样对。
+
+| 函数 | 作用 |
+| --- | --- |
+| `nextTo(m, target, side, buff = 16)` / `nextTo(m, target, side, { buff, align })` | 把 m 摆到 target(对象 / 矩形 / 点)的 `'left' \| 'right' \| 'up' \| 'down'` 一侧,外接盒相距 buff(可为负,故意压一点);`align` 为交叉轴 `'start' \| 'center' \| 'end'`,缺省 `'center'`(左右摆时 `'start'` 是顶对齐,上下摆时是左对齐) |
+| `alignTo(m, target, edge)` | 外接盒的 `'left' \| 'right' \| 'top' \| 'bottom' \| 'centerX' \| 'centerY'` 与 target 的同一条边对齐 |
+| `arrange(objects, { direction = 'right', buff = 16, align = 'center', at })` | 按数组顺序一个接一个排(对象各自独立,可以分别 `FadeIn`;`'down'` 竖排从上到下,`'left'` / `'up'` 反向),返回整排外接盒;不给 `at` 就原地重排(整排中心 = 原来的并集中心)。空数组返回 `null`,同一对象给两次抛错 |
+| `centerAt(m, p)` | 外接盒中心落到 p(组居中用它,不用 `moveTo`) |
+| `fitWidth(m, w)` / `fitWithin(m, w, h)` | 只缩不放,绕外接盒中心缩;竖屏放不下的长公式用它 |
+| `keepInside(m, rect, margin = 0)` | 超出 rect(四周内缩 margin)的那边推回来,放得下返回 `true`;某个方向放不下时在该方向居中并返回 `false` |
+| `visibleWorldBounds(scene, { safe = true, view, marginPx })` | 画面里看得见的世界矩形(缺省扣掉字幕安全区);`view: scene.getFitView(对象, pad)` 按运镜终点算。画布隐藏时 `null` |
+| `boundsOf(m)` | m 在父坐标系里的外接盒 |
+
+- m 和参照物要在**同一个父坐标系**(都是场景根,或同一个组的兄弟);跨容器时传矩形。`visibleWorldBounds` 是场景根的坐标。
+- **一次性**:网页字体晚到、机位变了都不会自动重摆。字号设在容器上的子元素,最后一个参数传 `scene.measureContext()`(`tex()` / `label()` 把字号设在对象自身,不用传)。
 
 ```ts
-export type Side = 'left' | 'right' | 'up' | 'down';
+arrange([a, b, c], { direction: 'down', buff: 24, align: 'start' });  // 左对齐竖排,原地重排
+nextTo(caption, graph, 'down', 20);                                   // 说明放在图下方 20 处
+alignTo(title, visibleWorldBounds(env.scene, { marginPx: 24 }) ?? boundsOf(title), 'top'); // Manim 的 to_edge(UP)
 
-/** Manim 的 next_to:把 b 摆到 a 的某一侧,间距 buff。a、b 在同一个父节点下且都没旋转。 */
-export function nextTo(b: MObject, a: MObject, side: Side, buff = 16, ctx?: MeasureContext): void {
-  const A = a.getBox(ctx);
-  const B = b.getBox(ctx);
-  const ax = a.position.x + A.center.x * a.scale;
-  const ay = a.position.y + A.center.y * a.scale;
-  const gapX = (A.size.w * a.scale + B.size.w * b.scale) / 2 + buff;
-  const gapY = (A.size.h * a.scale + B.size.h * b.scale) / 2 + buff;
-  const cx = side === 'right' ? ax + gapX : side === 'left' ? ax - gapX : ax;
-  const cy = side === 'down' ? ay + gapY : side === 'up' ? ay - gapY : ay;
-  b.moveTo({ x: cx - B.center.x * b.scale, y: cy - B.center.y * b.scale });
-}
-
-/** 让 m 的外接盒中心落在 p(Group 居中要用它而不是 moveTo)。没旋转时成立。 */
-export function centerAt(m: MObject, p: Point, ctx?: MeasureContext): void {
-  const c = m.getBox(ctx).center;
-  m.moveTo({ x: p.x - c.x * m.scale, y: p.y - c.y * m.scale });
-}
+// 推近前按终点画面摆:还藏着、推近后才露面的标签先挪进画里(已经露着的就一起框进 playFit,或者藏掉)
+const visible = visibleWorldBounds(env.scene, { view: env.scene.getFitView([sq, sqLabel], 20) });
+if (visible) keepInside(areaLabel, visible, 8);
+await env.scene.playFit([sq, sqLabel], { pad: 20, runTime: 2 });
+env.checkpoint();
 ```
+
+摆完以后出画、互压、压刻度、压字幕有没有,用 `npm run layout:check -- <影片>` 查(见 [12.1](#121-内容测试-node-scriptstestmjs-content))。
 
 **`Layout`**:固定尺寸的行 / 列容器,以自身中心为原点,盒子就是 width × height。
 
@@ -3687,7 +3782,8 @@ env.scene.layout(row);   // = row.layout(scene.measureContext()),一次性排好
 | `MathTex` / `Tex` | `Tex`(行间样式 `{ displayMode: true }`) |
 | `Text` / `MarkupText` | `Label`(单行);多行叠几个 |
 | `DecimalNumber` + `always_redraw` | `Label` + updater 里 `setText(v.toFixed(2))`,或 `sweep` |
-| `VMobject` 子类 / `SVGMobject` | `PathShape` 子类 / `SvgPath`(只接受 `d` 串,不读文件;不支持位图) |
+| `VMobject` 子类 / `SVGMobject` | `PathShape` 子类 / `Illustration`(整份 SVG,按部件做动画,见 6.12;单条 `d` 串用 `SvgPath`) |
+| `ImageMobject` | `Picture`(见 6.12;文件放 `public/`,影片模块顶层预加载) |
 | `Circle` `Square` `Line` `Arrow` `Dot` `Arc` `Polygon` `Star`…… | 同名;世界单位(≈ px),**y 向下、角度顺时针**:Manim 的 `Arc(r, 0, PI/2)`(扫过的角)写 `new Arc(r, -Math.PI / 2, 0)`(终止角);`Polygon` 顶点 y 取负 |
 | `DashedLine` | `Line` + `setStyle({ dash: [6, 5] })` |
 | `DoubleArrow` / `RoundedRectangle` | 没有,见 6.3 |
@@ -3696,12 +3792,14 @@ env.scene.layout(row);   // = row.layout(scene.measureContext()),一次性排好
 | `Axes` / `NumberPlane` / `NumberLine` | 同名;刻度限制见 6.6 |
 | `axes.c2p` | `Axes.toLocal(x, y)` / `NumberPlane.c2p`,得本地坐标,再 `toParent` 换到组外 |
 | `axes.plot(f)` / `ParametricFunction` | `new FunctionGraph(f, axes)` / `ParametricCurve2D`,和坐标系同组 |
+| `ThreeDAxes` / 3D 的 `c2p`、`ParametricFunction`、`Surface` | `Axes3D` / `axes.point(x, y, z)`、`axes.curve(fn, [t0, t1])`(或 `ParametricCurve3D`)、`ParametricSurface((u, v) => axes.point(u, v, f(u, v)), { uRange, vRange })`,都放进一个 `Space3D`(9.6) |
+| `Line3D` / `Arrow3D` / `Dot3D`;3D 里不跟着转的字(`add_fixed_orientation_mobjects`) | 同名;字用 `Anchor3D(tex(…), 3D 点)` 钉在点的投影上(9.6) |
 | `get_area` / `get_riemann_rectangles` | `AreaUnderCurve` / `RiemannRectangles`(+ `RiemannTo`) |
 | `TangentLine` / `get_secant_slope_group` | `TangentLine(coords, fn, x)` / `SecantLine(coords, fn, x1, x2)` |
 | `TracedPath` / `ArrowVectorField` / `BarChart` | `Trace` + updater / `VectorField` / `BarChart`(+ `BarChartTo`) |
 | `Matrix` / `Table` | `Tex` 的 `pmatrix` / `array` |
 | `SurroundingRectangle` / `Underline` | 没有:`surroundPart`(6.7)/ `Line` |
-| `arrange` / `next_to` / `to_edge` | 没有:`nextTo` / `centerAt`(6.9)或 `Layout` |
+| `arrange` / `next_to` / `align_to` / `to_edge` | `arrange` / `nextTo` / `alignTo`(6.9);`to_edge`:`const box = visibleWorldBounds(scene); if (box) alignTo(m, box, 'left')`(画布还没尺寸时 `visibleWorldBounds` 返回 `null`);固定尺寸的行列用 `Layout` |
 | `move_to` / `shift(UP)` | `moveTo({ x, y })`(组按中心放用 `centerAt`)/ `shift(0, -d)`,d 是世界单位 |
 | `.scale(k)` / `.rotate(a)` | `m.scale *= k` / `m.rotation -= a`(绝对值字段;这里正角顺时针);渐变用 `ScaleTo` / `RotateTo` |
 | `set_color` / `set_fill` / `set_stroke` | `setStyle({ stroke, fill, strokeWidth, textColor })` |
@@ -3712,6 +3810,212 @@ env.scene.layout(row);   // = row.layout(scene.measureContext()),一次性排好
 | `config.frame_width` | 没有固定画幅,按内容取景([8.4](#84-取景)) |
 
 动画名字的对照见 [7.12](#712-从-manim-过来)。
+
+### 6.12 图片与 SVG 插画
+
+两种图元,都从 `'../engine'` import;捷径 `picture` / `illustration` 在 `'./helpers'`([5.4](#54-助手helpers))。
+
+| 图元 | 画什么 | 按部件做动画 | 要不要预加载 |
+| --- | --- | --- | --- |
+| `Picture` | 位图:PNG、JPEG、WebP、GIF、AVIF、BMP(SVG 也能当位图) | 不能,整张 | 要 |
+| `Illustration` | SVG 解析成真矢量部件(`SvgPart` / `SvgGroup`) | 能,按 id / class / 下标取 | 文件要;SVG 源码字符串不用 |
+
+**加载模型:影片模块顶层预加载,`direct` 里同步构造。** 分段脚本要能从 t = 0 重放([5.2](#52-directedsegment-与-segmentenv)),脚本在两次 `play` 之间等网络,
+段内时钟停着、外面的时钟在走,预览、跳转、导出的时间线就错位了。所以资源在影片文件**顶层** `await` 取好:影片模块被 import 时就等到了,
+直播、`?preview=`、故事板、导出、内容测试、`check-film.mjs`、`layout:check`、配音工具全都自动等,不用接线。
+
+```ts
+// 影片文件顶部(模块顶层,不在 direct 里)。文件放在 public/img/earth.png、public/img/moon.png、public/svg/rocket.svg
+import { Create, FadeIn, Indicate, Picture, loadImage, preloadAssets } from '../engine';
+import { hide, illustration, picture, stage, unrevealed } from './helpers';
+
+const EARTH = await loadImage('/img/earth.png');                                  // ImageAsset:原图 400×200
+const [MOON, ROCKET] = await preloadAssets(['/img/moon.png', '/svg/rocket.svg']); // 并行取;MOON: ImageAsset,ROCKET: SvgAsset
+
+// direct 里:同步构造
+const earth = picture(EARTH, 300, { x: -200, y: 0 });                       // 宽 300,高按原图比例 → 150
+const moon = new Picture(MOON, { height: 60 }).moveTo({ x: -60, y: -90 });  // 只给高,宽按比例
+const rocket = illustration(ROCKET, 160, { x: 200, y: 0 });                 // 画板按宽 160 等比缩放
+unrevealed(earth, rocket);                                                  // Create 登场:先收起
+hide(moon);
+stage(env.scene, [earth, moon, rocket], 40);
+await env.play(new Create(earth, { runTime: 1.2 }));                        // 从左往右擦出
+await env.play(new Create(rocket, { runTime: 2 }));                         // 部件错峰:先描边再填色
+await env.play(new FadeIn(moon), new Indicate(rocket.part('flame')));       // 按 SVG 里的 id 取部件
+```
+
+- **用句柄**(`const X = await loadImage(…)`,再 `picture(X, …)`):漏写 `await` 直接是类型错误。字符串写法 `picture('/img/earth.png', 300)` 也行,但顶层要先 `await preloadAssets([...])`,漏了只在运行时报错。
+- 只在具体影片 / 场景文件里 `await`,别放进 `helpers.ts` 这类共享模块(所有片子都得等它)。几个资源用一次 `preloadAssets` 并行取,顶层逐个 `await` 会排成一串。
+- 资源不可变、整页常驻,重放时每次构造只新建图元。**不要**在 `direct` 里 `await loadImage(...)`:它不报错,但时间线会错位。
+
+| 函数 | 返回 | 说明 |
+| --- | --- | --- |
+| `loadImage(src)` | `Promise<ImageAsset>` | 取位图并解码。`ImageAsset = { kind: 'image', src, width, height, source }`,`width` / `height` 是原图像素 |
+| `loadSvg(src)` | `Promise<SvgAsset>` | 取 SVG 并解析(`{ kind: 'svg', src, text, document }`);有不支持的内容时 `console.warn` 一次 |
+| `preloadAssets(requests)` | 与输入逐项对应的元组 | 并行取一批。字符串按地址推断种类:`.svg`(忽略 `?…`)和 `data:image/svg+xml` → SVG,其余 → 位图;`{ src, as: 'image' \| 'svg' }` 指定(把 SVG 当位图用、没有后缀的地址)。**数组字面量直接写在调用里**,解构出的每项类型才精确。全部落定才抛:一项失败抛它自己的 `AssetError`,多项抛 `batch`(`message` 逐条列出,`failures` 是各项) |
+| `getImage(src)` / `getSvg(src)` | 资源 | 同步取已加载的;`new Picture('/img/a.png')` 这类字符串构造就是调它 |
+| `isAssetReady(src, as?)` | `boolean` | 不抛错;`as` 缺省按地址推断 |
+| `createImageAsset(source, width, height, label = '(生成的图像)')` | `ImageAsset` | 把自己画的离屏画布等包成资源(不经缓存、同步);会污染画布的跨源图像当场抛 `tainted` |
+
+**地址**
+
+- 本地文件放 `public/`,写 `'/img/earth.png'`(= `public/img/earth.png`);`'img/earth.png'`、`'./img/earth.png'` 是同一个资源,查询串和 `#` 保留;`..` 越出 `public/` 报 `bad-path`。页面部署在子路径(Vite `base`)时照样这么写。
+- `data:` 地址两边都能用,适合小图标:`` `data:image/svg+xml,${encodeURIComponent(svg)}` ``、`data:image/png;base64,…`。插画也可以直接传 SVG 源码字符串(见下)。
+- 远程 `https://…`:浏览器按 CORS 取,对方必须回 `Access-Control-Allow-Origin`,否则**预加载就失败**(`network`,消息写明 CORS);最稳是下载进 `public/`。`blob:` 只在浏览器里能用。
+- 同一地址(规范化后)只请求一次,并发共用;失败不缓存,补好文件再加载会重试。
+
+**各入口里的样子**
+
+| 在哪里 | 资源怎么来 | 加载失败时 |
+| --- | --- | --- |
+| 页面直播、`?preview=`、故事板 | `filmEntry` import 影片模块时等到 | 红条 `场景加载失败:<AssetError 的 message>`;补好文件后**刷新页面**(浏览器记住了加载失败的模块) |
+| 离线导出、实时录制 | 同一份解码好的图像,画进离屏画布照常 | 图片按 CORS 取、Blob 解码,不会污染画布(见 [11.4](#114-离线逐帧-vs-实时录制)) |
+| node:内容测试、`check-film.mjs`、`layout:check`、配音工具 | 本地路径读 `<项目根>/public/`,`http(s)` 用 fetch,`data:` 自己解 | 同样的 `AssetError`,报成影片模块加载失败(测试里是 `<加载模块>`) |
+
+node 里位图**只从文件头量尺寸**(PNG、JPEG、GIF、WebP、BMP、AVIF/HEIF、SVG;JPEG 的 EXIF 竖拍与浏览器一样宽高互换),`source` 为 `null`,`Picture` 不画,
+但尺寸、取景、时间线、版面检查照常;SVG 在 node 和浏览器用同一个解析器,结果一致。测试里换加载器用 `setAssetLoader(loader)`(`null` 恢复缺省),
+或 `src/testing/assetStub.ts` 的 `installAssetStub({ images: { '/img/a.png': { width: 400, height: 200 } }, texts: { '/svg/b.svg': 源码 }, missing: [...] })`,用完 `restore()`。
+
+**`AssetError`**(`isAssetError(e)` 判断,按 `code` 分支,别匹配文案;`src` 是作者写的地址)
+
+| `code` | 什么时候 | `message` 原文(`…` 为节选) |
+| --- | --- | --- |
+| `not-loaded` | 字符串构造 / `getImage` 时没预加载 | `图片「/img/a.png」还没有预加载:在影片模块顶层写 const X = await loadImage('/img/a.png')(或 await preloadAssets([...]))再在脚本里用。…`(SVG 是 `SVG「…」`、`loadSvg`) |
+| `loading` | 顶层漏了 `await` | `图片「…」还在加载:loadImage / preloadAssets 前面漏了 await?模块顶层要等它完成再用。` |
+| `kind-mismatch` | 按 SVG 预加载却当位图用(或反过来) | `「/x.svg」是按 SVG 插画预加载的;当位图用要 preloadAssets([{ src: '/x.svg', as: 'image' }])。` |
+| `bad-path` | 空地址、越出 `public/` | `资源地址「../x.png」越出了 public/ 目录` |
+| `http` | 非 2xx;node 里文件不存在;开发服务器拿 `index.html` 顶替不存在的文件 | `图片「/img/a.png」取不到:HTTP 404(文件应放在 public/img/a.png)`;后两种在括号里分别补 `;node 里找不到 <绝对路径>` / `;服务器返回的是网页 index.html —— 开发服务器对不存在的文件会这样回应` |
+| `network` | 网络错误;跨源地址没开 CORS | `图片「https://…」取不到:网络错误,或对方服务器没开 CORS。跨源图片必须带 Access-Control-Allow-Origin 响应头,否则会污染画布、导出失败;也可以把文件下载到 public/ 里。` |
+| `decode` / `size` | 格式不支持、文件损坏 / 量不出原始尺寸 | `图片「…」解码失败(格式不支持或文件损坏)` / `图片「…」量不出原始尺寸(收到 0×0)` |
+| `parse` | SVG 语法错、根元素不是 `<svg>` | `SVG「…」解析失败:第 1 行 闭合标签 </svg> 与第 1 行的 <g> 不配对` / `…根元素是 <html>,不是 <svg>` |
+| `tainted` | `createImageAsset` 收到跨源图像;浏览器把 SVG 当位图画仍会污染时 | `图像「…」来自没开 CORS 的跨源地址,画上画布会污染导出;请用 loadImage 加载(对方需开 CORS)或放进 public/。` |
+| `batch` | `preloadAssets` 多项失败 | `有 2 个资源没能加载:`,下面每行 `· <各项的 message>` |
+
+**`Picture`**:`new Picture(source: string | ImageAsset, options?)`;捷径 `picture(src, width, at?)` = 按宽度建 + `moveTo(at)`。
+
+| 选项 | 缺省 | 说明 |
+| --- | --- | --- |
+| `width` | — | 显示宽(世界单位);只给它时高按原图宽高比 |
+| `height` | — | 只给它时宽按比例 |
+| `fit` | `'contain'` | 两个都给时:`'contain'` 等比塞进 width × height(对象就是塞进去后的大小,可能比框小);`'cover'` 等比铺满、居中裁掉溢出(恰好 width × height);`'fill'` 拉伸 |
+| `smoothing` | `true` | 缩放时平滑;像素画传 `false`(也是可写字段) |
+
+- 都不给尺寸时按原图像素(1 像素 = 1 世界单位)。尺寸不是正的有限数、`fit` 写错,构造时抛错(`Picture 的 width 需要正的有限数,收到 NaN`)。
+- 以 `position` 为中心,盒子 = 显示尺寸。`width` / `height` 读显示尺寸(未乘 `scale`),`naturalWidth` / `naturalHeight` 读原图像素;`setSize({ width, height, fit })` 立即改尺寸,要动画用 `ScaleTo`。
+- `scale`、`rotation`、`opacity`、相机、组的透明度照常生效。
+
+| 动画 | 对 `Picture` 的效果 |
+| --- | --- |
+| `Create` | 从左往右擦出;先 `unrevealed`。`pace` 不起作用 |
+| `Write` | 在自己的时段里淡入(不藏,规则同 [7.2](#72-先藏后揭)) |
+| `FadeIn` / `FadeOut` / `MoveTo` / `ScaleTo` / `RotateTo` / `Transform` | 照常(`Transform` 对位图是交叉淡化) |
+| `ColorTo`、`Indicate` 的着色 | **无效**(`Indicate` 的放大照常);要指给观众看用 `Circumscribe` / `Flash` |
+
+**`Illustration`**:`new Illustration(source: string | SvgAsset, options?)`;捷径 `illustration(src, width, at?)`。`source` 是 SVG 源码(去掉开头空白后以 `<` 开头:同步解析,**不用预加载**,同一字符串只解析一次)、已预加载的路径,或 `loadSvg` 的资源。
+
+| 选项 | 缺省 | 说明 |
+| --- | --- | --- |
+| `width` / `height` / `fit` | — / — / `'contain'` | 画板的显示尺寸,规则同 `Picture`;`fit` 只有 `'contain'` / `'fill'`(`'fill'` 时线宽按 √(横缩放 × 纵缩放) 近似) |
+| `lagRatio` | min(4 / 部件数, 0.2) | `Create` 时部件之间的错峰;0 = 同时 |
+| `clip` | `false` | 按画板裁剪。缺省不裁:整个落在画板外的形状解析时已丢掉,只有跨出画板边的部分会露出;不裁也方便把部件移出画板。`Write` / `Transform` 期间不裁 |
+| `label` | 地址 / `'内联 SVG'` | 报错、告警里的名字 |
+
+- **画板**:SVG 根元素的 `width` / `height`(`pt`、`mm`、`cm`、`in` 等换成像素,`em` 按 16 px);只写一个时另一个按 `viewBox` 比例;都没写用 `viewBox` 的宽高;连 `viewBox` 也没有就按内容量。不给尺寸选项时 1 画板像素 = 1 世界单位。
+- **原点 = 画板中心,盒子 = 画板**(不是内容的紧包围盒),`stage` / 取景按画板框。`width` / `height` 是显示尺寸,`naturalWidth` / `naturalHeight` 是画板像素。
+- **部件**:形状 → `SvgPart`(`PathShape` 子类),`<g>` / `<a>` / `<use>` / 嵌套 `<svg>` / `<switch>` → `SvgGroup`(`Group` 子类),树结构与 SVG 一致。
+
+| 取部件 | 返回 |
+| --- | --- |
+| `illo.part(id)` | SVG 里 `id` 为它的部件或组;没有就抛错并列出现有 id(最多 20 个)。`<use>` 实例内部的 id 不算 |
+| `illo.parts[i]` | 全部形状部件,文档顺序 |
+| `illo.partsWithClass(name)` | `class` 含 name 的部件和组,文档顺序(可能为空) |
+| `illo.ids` / `illo.hasPart(id)` | 全部 id / 有没有这个 id |
+
+每个部件、组的原点 = 自己的包围盒中心(`RotateTo` / `ScaleTo` / `Indicate` 绕自己转);`position` 在父级(组或插画)坐标里,单位是世界单位(按显示尺寸,未乘插画自己的 `scale`),
+所以把一块往右上挪 12 就是 `new MoveTo(p, { x: p.position.x + 12, y: p.position.y - 12 })`。每个部件是一个对象,上千个部件的插画会慢。
+
+**颜色**:SVG 里写明的颜色**锁在部件上**,容器的 `setStyle` 盖不掉,只有 `ColorTo` 改得动。`currentColor`(且没写 `color`)和整条祖先链都没写 `fill` 的部件跟随**墨色** = `textColor`
+(主题缺省 `#1f2937`,不是 SVG 缺省的纯黑),`illo.setStyle({ textColor: '#2563eb' })` 一键换色。`opacity`、`fill-opacity`、`stroke-opacity` 烘焙进每个部件的颜色,部件自己的 `opacity` 都是 1。
+
+| 动画 | 对 `Illustration` 的效果 |
+| --- | --- |
+| `Create(illo)` | 先 `unrevealed(illo)`;叶子部件按文档顺序错峰(`lagRatio`)。只描边的部件沿弧长长出,有填充的前半程描轮廓、后半程填色淡入(同 `Tex`);什么都不画的部件不占时段 |
+| `Create(illo.part('face'))` | 只画这个组 / 部件(组同样错峰);先 `unrevealed` 它 |
+| `Write(illo)` | 每个部件一片,片间错开(不藏) |
+| `pace: 'curvature'` | `Create` / `Write` 都传给每个部件,各按自己的形状在拐角放慢 |
+| `ColorTo(part, { fill })` | 单个部件换色,从当前实际颜色平滑过渡(墨色部件也一样);`ColorTo(illo, …)` 逐叶子生效,锁定的颜色也改;整体改线宽用 `ColorTo(illo, { strokeWidth })` |
+| `FadeIn` / `Transform` / `MoveTo` / `Indicate` / `Circumscribe` … | 整幅或单个部件都行;`Indicate` 的着色也染到部件上 |
+
+**支持的 SVG**
+
+| 类别 | 支持 |
+| --- | --- |
+| 形状 | `path`(完整 `d` 语法)、`rect`(含 `rx` / `ry`)、`circle`、`ellipse`、`line`、`polyline`、`polygon` |
+| 结构 | `g`、`a`、`use`(`href` / `xlink:href="#id"`,可引用 `symbol`)、嵌套 `svg`、`switch`(只画第一个条件成立的子元素)、`defs`;`display: none` 跳过整棵子树,`visibility: hidden` 只跳过形状本身 |
+| 变换、视口 | `transform`(`matrix`、`translate`、`scale`、`rotate(a cx cy)`、`skewX`、`skewY`,逐级组合)、`viewBox`、`preserveAspectRatio`(各种 align、`meet` / `slice`、`none`)、`%` 长度 |
+| 样式 | `fill`、`stroke`、`stroke-width`、`opacity`、`fill-opacity`、`stroke-opacity`、`fill-rule`(`evenodd` 换成等价的 nonzero)、`stroke-dasharray`、`stroke-linecap` / `stroke-linejoin` / `stroke-miterlimit`、`color`、`vector-effect: non-scaling-stroke`;写在属性、`style=""`、`<style>` 里都行(优先级:属性 < 样式表 < `style=""`),样式表只认 `*`、标签、`.class`、`#id` 及其复合和逗号列表 |
+| 颜色 | 148 个 CSS 颜色名、`#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa`、`rgb()` / `rgba()`、`hsl()` / `hsla()`、`none`、`transparent`、`currentColor`(SVG 里的颜色自己解析,node 里也没问题;`ColorTo` 的目标色仍按 [6.10](#610-样式主题与颜色) 写十六进制) |
+| 近似 | 渐变(`url(#渐变)`)按中点的单色画;`url(#不存在)` 用后备色 |
+| 忽略并告警 | `<text>`(文字用 `Label` / `Tex` 叠在插画上)、`<image>`(用 `Picture` 叠上)、`<foreignObject>` 等其它元素;`clip-path`(盖住整个画板的单个矩形除外,Figma 导出常见)、`mask`、`filter`、`marker-*`、`stroke-dashoffset`、`mix-blend-mode`、`paint-order`、CSS 的 `transform` 属性、`pattern` 颜料、组合符 / 属性 / 伪类选择器与 `@media`、非法的 `transform` / `viewBox` |
+| 静默跳过 | `title`、`desc`、`metadata`、`defs` 里没被引用的内容、编辑器私有元素(`inkscape:*`、`sodipodi:*`) |
+
+不支持的内容**每份资源只在控制台告警一次**(文件在加载时,源码字符串在第一次构造时;后者 `check-film.mjs` 会列成「控制台:」提醒),如
+`[svg] 「/svg/cat.svg」里有不支持的内容,已忽略:<text>×2(文字请用 Label / Tex 叠在插画上)、filter 属性×1、clip-path 属性×4、渐变(按中点单色近似)×1`。
+其它已知差异:半透明的组里重叠的子元素会互相透出;`Write` / `Transform` 期间线帽、线连按部件共同的线型画,部件线型不一致时这段时间用画布缺省(平头、尖角),播完恢复。
+
+下例用 SVG 源码字符串(不用文件)画一张平均切成四块的饼:`Create` 逐块描出(`pace: 'curvature'`,拐角处放慢),按 id 取出一块、上色,再 `Write` 分数。
+
+```ts
+// src/film/refPie.ts
+import { ColorTo, Create, Indicate, MoveTo, Write, lightTheme } from '../engine';
+import { directedSegment } from './film';
+import type { Segment } from './film';
+import { hide, illustration, isNarrow, stage, tex, unrevealed } from './helpers';
+
+// 画板 120×120,饼心 (60, 60)、半径 48;描边 currentColor 跟随主题墨色,每块带 id 方便单独取。
+const PIE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <g id="pie" fill="#fde68a" stroke="currentColor" stroke-width="3" stroke-linejoin="round">
+    <path id="q1" d="M60 60 V12 A48 48 0 0 1 108 60 Z"/>
+    <path id="q2" d="M60 60 H108 A48 48 0 0 1 60 108 Z"/>
+    <path id="q3" d="M60 60 V108 A48 48 0 0 1 12 60 Z"/>
+    <path id="q4" d="M60 60 H12 A48 48 0 0 1 60 12 Z"/>
+  </g>
+</svg>`;
+
+export const refPieSegment: Segment = directedSegment(
+  '四分之一',
+  // 2.4 描出 + 0.5 + 0.9 取出上色 + 0.8 + 1.2 写分数 + 1 强调 + 4 停留 = 10.8。
+  10.8,
+  [
+    { start: 0.2, end: 2.7, text: '一张饼平均切成四块' },
+    { start: 3.0, end: 5.8, text: '取出的一块是四分之一' },
+    { start: 6.1, end: 10.6, text: '分母是平均分的份数,分子是取的份数' },
+  ],
+  async (env) => {
+    const { scene } = env;
+    scene.setTheme({ ...lightTheme, showGrid: false, showAxes: false });
+    const narrow = isNarrow(scene);
+    const pie = illustration(PIE, 240, narrow ? { x: 0, y: -90 } : { x: -120, y: 0 }); // 显示 240×240
+    const q1 = pie.part('q1'); // 右上那块;position 是它在组里的中心(世界单位)
+    const out = { x: q1.position.x + 12, y: q1.position.y - 12 };
+    const frac = tex('\\frac{\\textcolor{#2563eb}{1}}{4}', 64, narrow ? { x: 0, y: 130 } : { x: 150, y: 0 });
+    unrevealed(pie); // Create 登场
+    hide(frac); // 不是第一拍的 Write:先藏,临播前设回 1
+    stage(scene, [pie, frac], 32);
+
+    await env.play(new Create(pie, { runTime: 2.4, pace: 'curvature' })); // 0–2.4 四块错峰描出
+    await env.wait(0.5); // 2.4–2.9
+    await env.play(new ColorTo(q1, { fill: '#2563eb' }, { runTime: 0.9 }), new MoveTo(q1, out, { runTime: 0.9 })); // 2.9–3.8
+    await env.wait(0.8); // 3.8–4.6
+    frac.opacity = 1;
+    await env.play(new Write(frac, { runTime: 1.2 })); // 4.6–5.8
+    await env.play(new Indicate(frac)); // 5.8–6.8
+    await env.wait(4); // 6.8–10.8
+  },
+);
+
+export const refPieFilm: Segment[] = [refPieSegment];
+```
 
 ## 7. 动画
 
@@ -3753,17 +4057,26 @@ await env.wait(1.5); // 停留:画面不动,updater 照跑
 |---|---|---|
 | `FadeIn` | `new FadeIn(m, { to?, runTime?, rateFunc? })` | begin 时 opacity 置 0,淡到 `to`(缺省当前值,为 0 时取 1)。**不能调暗可见对象**(先跳到 0),用 7.11 的 `OpacityTo` |
 | `FadeOut` | `new FadeOut(m, { runTime?, rateFunc? })` | 淡到 0,**对象仍在场景里**,可再 `FadeIn`(淡回 1);不要了就 `scene.remove(m)` |
-| `Create` | `new Create(m, { runTime?, rateFunc? })` | 描边生长(见下)。不支持的对象 begin 时抛错 `Create 需要支持描边生长的对象:…`;`m.supportsReveal` 可查 |
-| `Write` | `new Write(m, { lagRatio?, runTime?, rateFunc? })` | 逐片描轮廓再填充,片间错开;`lagRatio` 缺省 min(4 / 片数, 0.2)。`Label` 和 `\text{…}` 里的中文按片淡入 |
+| `Create` | `new Create(m, { runTime?, rateFunc?, pace?, paceStrength? })` | 描边生长(见下)。不支持的对象 begin 时抛错 `Create 需要支持描边生长的对象:…`;`m.supportsReveal` 可查。`pace: 'curvature'` 弯处放慢、直处加快(见下「笔速」) |
+| `Write` | `new Write(m, { lagRatio?, runTime?, rateFunc?, pace?, paceStrength? })` | 逐片描轮廓再填充,片间错开;`lagRatio` 缺省 min(4 / 片数, 0.2)。`Label` 和 `\text{…}` 里的中文按片淡入。`pace` 同 `Create`,只改每片轮廓内部的快慢 |
 | `MoveTo` / `ScaleTo` / `RotateTo` | `new MoveTo(m, target: Point, opts?)`、`new ScaleTo(m, k, opts?)`、`new RotateTo(m, radians, opts?)` | 补间 `position`(**父容器坐标**,组移动的是原点)/ `scale`(绕 `position`)/ 绝对角度(**正角顺时针**,0 → 2π 转一整圈) |
 | `FadeTransform` | `new FadeTransform(text, newText: string, { shift?, runTime?, rateFunc? })` | 只用于 `Label` / `Tex`:旧串上浮淡出,中点换串,新串自下浮现;`shift` 缺省 12。text 应已可见 |
 
 `RiemannTo(rects, { n?, sample? }, opts?)`、`BarChartTo(chart, values, opts?)` 见 [§6](#6-图元)。
 
 **`Create` 的样子**:圆和椭圆从 12 点钟顺时针画;线从起点到终点;`Dot` 从中心长大;闭合 `Polygon` 画完边才填色,其它闭合图形填充随笔迹出现(想先描边后填色:先不设 fill,Create 后 `ColorTo(m, { fill })`);
-`Label` 逐字打出;`Tex` 像 `Write`;`Axes` 画轴和刻度,箭头和轴名后半程淡入;任何 `Group`(含 `NumberPlane`)子元素同时生长,要逐个出现用 `LaggedStart`。
+`Label` 逐字打出;`Tex` 像 `Write`;`Axes` 画轴和刻度,箭头和轴名后半程淡入;任何 `Group`(含 `NumberPlane`)子元素同时生长,要逐个出现用 `LaggedStart`;
+位图 `Picture` 从左往右擦出,SVG 插图(`Illustration` / `SvgGroup`)逐件错峰画出、有填充的件先描轮廓再填色(见 [§6](#6-图元) 的图片与 SVG 插图);3D 线条(`Line3D` 等)按 3D 弧长从起点画起(见 [§9](#9-3d))。
 **不支持**(改用 `FadeIn`):`Annotation`、3D 网格、空的 `Group` / `Layout`、少于 2 个点的 `Polygon`,以及含它们的组。
 缓动终点不是 1 时 `Create` / `Write` / `Transform` 停在对应进度(`thereAndBack` 播完回到「还没画」)。
+
+**笔速 `pace`**:缺省 `'uniform'`,笔沿弧长匀速走。`pace: 'curvature'` 让笔在急弯、拐角处放慢,直的地方加快,像手写;只重新分配快慢,`runTime`、缓动、终态都不变。
+`paceStrength` 缺省 2、范围 0–4:最急的弯最多比直段慢 (1 + paceStrength) 倍。只写 `paceStrength` 就等于开了 `'curvature'`;`0` 等于匀速;`pace: 'uniform'` 再给 `paceStrength`、或取值越界,构造时抛错。
+
+- **跟着变的**:按弧长描的路径(`Polygon`、矩形、正多边形、`Star`、`SvgPath`、`FunctionGraph`、`ParametricCurve2D`、`Trace`、自定义 `PathShape`),`Tex` 的 `Create` 和 `Write` 每一片的轮廓(每个字形按自己的形状算,片与片的错峰不变),SVG 插图的每个部件(`SvgPart`;件与件的错峰不变)。组把笔速传给每个子元素,各算各的。
+- **不变的**:`Line`、`Circle`、`Arc`、坐标轴(直的或曲率处处一样,换算下来就是匀速);`Ellipse`(本来就按角度扫,两个尖端比两侧慢 长轴 / 短轴 倍,比任何强度的笔速都慢,所以不看 `pace`);有自己长法的 `Dot`、`Sector`、`Arrow`、`Label`、`BraceShape`、`AreaUnderCurve`、柱状图、`VectorField`、`Picture`;3D 对象(含 3D 线条)。
+- **急不急按整条路径的尺寸判断**(平滑窗口约为图形尺寸的 5%),所以缩放、旋转、字号都不改变节奏,拐角总会停一下。一条很长很密的波浪线(比如 20 个周期的 `sin` 图像)每个波峰只占几帧,平均下来就是匀速:这是故意的,逐峰减速看起来像抖动。要每个弯都明显放慢,就拆成几段分别 `Create`。
+- 开场曲线:`plotIntro(env, p, { curvePace: { pace: 'curvature' } })`。自己写的生长动画、覆盖的 `revealPath` 要遵守笔速,见 [7.11](#711-自定义动画)。
 
 ### 7.4 Transform:替换式变形
 
@@ -3975,7 +4288,9 @@ export const slopeReadout: Segment = directedSegment(
 - `begin(context?)`:记初态,`play` 调用时同步执行,抛错让 `play` reject;`context` 提供 `worldMatrix(对象)` 和 `styleOf(对象)`。
 - `interpolate(alpha)`:`alpha` 已过缓动,**按「初态 + alpha」绝对地**算,不要累加(预览、跳转会重放)。`finish()` 缺省 `interpolate(rateFunc(1))`。不用计时器、不读墙钟。
 
-`OpacityTo` 从**当前**不透明度补间到任意值(压暗配角,`FadeIn` 做不到);`Uncreate` 倒着收回描边。`BasePlayable` 的例子见 9.5 的 `TiltTo`。
+`OpacityTo` 从**当前**不透明度补间到任意值(压暗配角,`FadeIn` 做不到);`Uncreate` 倒着收回描边。`BasePlayable` 写法相同,只是不绑对象:构造 `super(options)`,`begin()` 记参数的初值,`interpolate(alpha)` 按初值 + alpha 设值(引擎的 `Orbit3D`、`ViewTo` 就这样补间 `Projection3D` 的视角,见 [§9](#9-3d))。
+要带笔速:构造里 `this.pace = resolvePace('Uncreate', options)`(校验 `pace` / `paceStrength`,匀速得 `null`),`interpolate` 里 `setRevealFraction(1 - alpha, this.pace)`;
+按弧长截路径的地方用 `revealPartial(path, f, pace)`(= `partialPath(path, 0, pacedFraction(path, f, pace))`),`revealPath` 覆盖里的 pace 取 `this.getRevealPace()`。
 
 ```ts
 import { Animation } from '../engine';
@@ -4010,7 +4325,7 @@ export class Uncreate extends Animation { // 只用于 supportsReveal 的对象;
 | Manim | 这里 |
 |---|---|
 | `ReplacementTransform` / `TransformMatchingShapes` | `Transform` / `TransformMatchingTex`;没有保留源的 `Transform` |
-| `ShowCreation`、`GrowArrow` / `DrawBorderThenFill` | `Create` / `Write` |
+| `ShowCreation`、`GrowArrow` / `DrawBorderThenFill` | `Create` / `Write`(缺省按弧长匀速;Manim 按贝塞尔参数走、弯处显得慢,最像的是 `{ pace: 'curvature' }`,见 7.3) |
 | `Uncreate`、`Unwrite` | `FadeOut`,或 7.11 的 `Uncreate` |
 | `GrowFromCenter` / `ShrinkToCenter` | `m.scale = 0` 后 `ScaleTo(m, 1)` / `ScaleTo(m, 0)` |
 | `m.animate.shift / scale / set_color`、`FadeToColor` | `MoveTo`(绝对位置)/ `ScaleTo` / `ColorTo` |
@@ -4018,9 +4333,9 @@ export class Uncreate extends Animation { // 只用于 supportsReveal 的对象;
 | `FadeIn(m, shift=…)` | `FadeIn(m)` 与 `MoveTo(m, 终点)` 同播 |
 | `m.animate.set_opacity(0.3)` | 7.11 的 `OpacityTo` |
 | `MoveAlongPath` / `TracedPath` / `DecimalNumber` | updater 或 `sweep` / `Trace` / `Label` + `setText`(7.9) |
-| `ThreeDAxes`、3D 点线 | 2D 对象按投影摆位(9.6) |
+| `ThreeDAxes`、3D 的点 / 线 / 箭头 / 曲线 | `Axes3D`、`Dot3D`、`Line3D`、`Arrow3D`、`ParametricCurve3D`;`add_fixed_orientation_mobjects` → `Anchor3D`;`Create` 按 3D 弧长生长(见 [§9](#9-3d)) |
 | `self.camera.frame.animate` | `scene.playFit`、`CameraMove`(8.5) |
-| `set_camera_orientation` / 环绕相机 | `Projection3D` / `Orbit3D`;俯仰用 9.5 的 `TiltTo` |
+| `set_camera_orientation(phi, theta)` / `move_camera` / 环绕相机 | `Projection3D.math({ elevation: π/2 − phi, azimuth: theta })` / `ViewTo` / `Orbit3D` |
 
 ## 8. 场景、相机与取景
 
@@ -4042,14 +4357,14 @@ export class Uncreate extends Animation { // 只用于 supportsReveal 的对象;
 | `fitObjects` / `fitBounds` | `fitObjects(objects, pad = 0)`、`fitBounds(bounds: WorldBounds, pad = 0)` | 瞬时取景(8.4);`fitView(…)` 已废弃 |
 | `playFit` | `playFit(objects, { pad = 0, runTime = 1, rateFunc = smooth }?)` | 运镜取景(8.5),之后跟 `env.checkpoint()` |
 | `getFitView` / `computeFitView` | `getFitView(objects, pad = 0)`、`computeFitView(bounds, pad = 0)` | 只算不动,返回 `{ x, y, zoom }` |
-| `setSafeArea` / `clearSafeArea` | `setSafeArea({ top?, bottom?, left?, right? })` | 屏幕 css 像素,只改写了的边;`safeAreaCenterOffset(): Point` 给镜头跟随用 |
+| `setSafeArea` / `clearSafeArea` / `getSafeArea` | `setSafeArea({ top?, bottom?, left?, right? })` | 屏幕 css 像素,只改写了的边;`getSafeArea()` 返回四边的拷贝;`safeAreaCenterOffset(): Point` 给镜头跟随用;画面可见的世界矩形用 `visibleWorldBounds(scene)`(6.9) |
 | `addUpdater` / `removeUpdater` | `addUpdater(fn: (scene, dt) => void): () => void` | 每帧、插值之前(7.9) |
 | `setPaused` / `getElapsed` | `setPaused(paused: boolean)`、`getElapsed(): number` | `getElapsed` 只在 play / wait 推进时增长 |
 | `getTheme` / `setTheme` | `setTheme(theme: Theme)` | 换主题,立即重画 |
 | `measureContext` / `layout` | `measureContext()`、`layout(node)` | 当前主题的量尺;排 `Layout` 用 `scene.layout(node)` |
 | `getCamera` / `getViewportSize` | `getCamera(): Camera`、`getViewportSize(): { w, h }` | 镜头(8.5)/ 视口 css 尺寸 |
 
-引擎和导出用的:`setDryRun(dry)`(不绘制)、`render()`、`renderTo(ctx, { x?, y?, width?, height? }?)`、`resize()` / `resizeAndRefit()`(8.6)、`setInteractionEnabled(enabled)`、`dispose()`。
+引擎和导出用的:`setDryRun(dry)`(不绘制)、`render()`、`renderTo(ctx, { x?, y?, width?, height? }?)`、`resize()` / `resizeAndRefit()`(8.6)、`setInteractionEnabled(enabled)`、`dispose()`。查当前一帧的版面问题(出画、文字互压、字太小……)用引擎函数 `findSceneLayoutIssues(scene, { zones? })`,影片用 `npm run layout:check`(12.1)。
 
 ### 8.3 播放语义
 
@@ -4117,14 +4432,18 @@ export class Uncreate extends Animation { // 只用于 supportsReveal 的对象;
 
 ## 9. 3D
 
-3D 对象是软件投影进 2D 画布的网格,都是 `MObject`:`moveTo`、`scale`、`opacity`、`setStyle`、`FadeIn` 照常用,可与 2D 图元混排、一起取景。
-点、线、字母、坐标轴用 2D 对象按投影摆位(9.6);网格之间互不遮挡(9.7)。整部 3D 片见 [4.12 3D 直观片](#412-3d-直观片)。
+3D 对象是软件投影进 2D 画布的网格和线条,都是 `MObject`:`moveTo`、`scale`、`opacity`、`setStyle`、`FadeIn` 照常用,可与 2D 图元混排、一起取景。
+立体、曲面、自定义网格见 9.2–9.4;3D 线段、箭头、曲线、坐标轴和钉在 3D 点上的字母见 9.6,它们和网格共用视角,被网格挡住的部分自动画淡虚线;网格之间互不遮挡(9.7)。整部 3D 片见 [4.12 3D 直观片](#412-3d-直观片)。
 
 ### 9.1 坐标与视角
 
 - **坐标**:x 向右、**y 向下**、z 指向观察者;角度用弧度(`Spin3D` / `Orbit3D` 的 `turns` 是圈数)。内置立体和曲面预设都以 **y 轴为对称轴**:圆锥、四棱锥尖朝上(−y)。
-- **视角** `new Projection3D({ rotX = -0.45, rotY = 0.6, viewDistance = 700, nearRatio = 0.2 })`:先绕 y 转 `rotY`(转台),再绕 x 转 `rotX`(俯仰,负值从上往下看);`viewDistance` 越小透视越强。
-- **每个网格缺省各持一份视角**。同一个 `Projection3D` 交给几个网格(构造选项 `projection` 或 `mesh.setProjection(view)`)就共用,一个 `Orbit3D` 带动整组;网格的 `rotX` / `rotY` 读写的就是视角。
+- **数学坐标**(课本的右手系、z 朝上):`mathPoint(x, y, z, unit = 1)` 换成引擎坐标 (x, −z, −y)·unit。`Axes3D` 缺省就是这套坐标,`axes.point(x, y, z)` 等于 `mathPoint(x, y, z, axes.unit)`(9.6)。内置立体换到数学坐标里正好沿 Z 立着(圆锥尖朝 +Z)。
+- **视角** `new Projection3D({ rotX = -0.45, rotY = 0.6, viewDistance = 700, nearRatio = 0.2 })`:先绕 y 转 `rotY`(转台),再绕 x 转 `rotX`(俯仰,负值从上往下看);`viewDistance` 越小透视越强(至少 1),`nearRatio` 钳在 [0.01, 1];赋非有限值被忽略。
+- **课本视角** `Projection3D.math({ azimuth = π/6, elevation = 0.45, viewDistance = 700, nearRatio = 0.2 })`:数学 X 轴朝左下、Y 轴朝右、Z 轴朝正上。`azimuth` 是观察者所在方向从数学 +X 绕 +Z 逆时针量的角,`elevation` 是仰角(正值从上往下看)。两者也是视角上可读写的属性,只是换个说法:`rotY = −azimuth − π/2`、`rotX = −elevation`(读出的 `azimuth` 折回 (−π, π])。`Orbit3D`(`rotY` 增大)在数学视角里是 `azimuth` 减小:从 +Z 往下看,物体逆时针转。
+- **每个网格、线条、标注缺省各持一份视角**。同一个 `Projection3D` 交给几个对象(构造选项 `projection` 或 `setProjection(view)`)就共用,一个 `Orbit3D` / `ViewTo` 带动整组;网格的 `rotX` / `rotY` 读写的就是视角。放进同一个 `Space3D`(9.6)自动共用。
+- **灭点**:每个 3D 对象以**自身原点**为灭点。同一个立体的零件、要和它对齐的线条和字母,必须在同一个父节点里、同样的 `position` / `scale`、`rotation` 为 0;最省心是都放进一个 `Space3D` 并留在原点,要挪就挪整个空间。并排的两个立体各有各的灭点,不是严格的单点透视。
+- **投影一个点**:`view.project(p, frame?)` 返回 `{ x, y, depth, scale }`,公式与网格绘制逐项相同;`frame` 传网格或 `Space3D` 时得到它父坐标系里的位置,不传是本地坐标。`view.toView(p)` 只做旋转。要把 2D 对象钉在 3D 点上用 `Anchor3D`(9.6),不必自己每帧投影。
 - **样式**:不设 `fill` 画线框,被挡住的边画成淡虚线,线宽缺省 2;设了 `fill` 按深度排序填色加平面明暗,每个面的边用 `stroke` 描,嫌密就把 `strokeWidth` 调到 1 或 0。
 
 ### 9.2 立体
@@ -4149,6 +4468,7 @@ const cone = new Cone({ radius: 45, height: 90, segments: 32, projection: view }
 `sphereTorusHomotopy(sphereRadius, mainRadius, tubeRadius)`(球面到环面参数化的线性插值,`params[0]` = t ∈ [0, 1]);`sphereSurface(radius, options?)` 直接返回球面。
 
 - `resample(params?)` 按新参数重采样(不传则强制重采),`getParams()` 返回副本。
+- `pointAt(u, v)` 按当前参数取曲面上的一点(本地 3D 坐标),画曲面上的曲线、给曲面上的点标注用:`new ParametricCurve3D((t) => surface.pointAt(t, v0), [u0, u1])`(9.6)。
 - **要 `ParamMorph` 就在构造时给参数初值**(如 `params: [0]`),否则 begin 时报「ParamMorph 的目标参数个数(1)与曲面当前参数个数(0)不一致」。
 
 **隐式曲面** `new ImplicitSurface(field: FieldFn, options?)`,`FieldFn = (x, y, z, params: number[]) => number`(有向距离场,体内为负)。
@@ -4176,133 +4496,261 @@ const twoBalls: FieldFn = (x, y, z, params) => {
 |---|---|---|
 | `Spin3D` | `new Spin3D(mesh, turns = 1, opts?)` | 绕 y 轴转;转的是它的**视角**,共用视角的一起转 |
 | `Orbit3D` | `new Orbit3D(projection, turns = 1, opts?)` | 转一套共享视角,整组转动用它 |
+| `ViewTo` | `new ViewTo(projection, target: { rotX?, rotY?, azimuth?, elevation?, viewDistance? }, opts?)` | 把视角补间到目标:俯仰、转到指定方位、改透视;给了哪几个键就动哪几个 |
 | `MorphTo` | `new MorphTo(mesh, targetVertices: Vec3[], opts?)` | 顶点逐个补间,数量须一致 |
-| `ParamMorph` | `new ParamMorph(surface, to: number[], opts?)` | `params` 从当前值补间到 `to`,每帧 `resample` |
+| `ParamMorph` | `new ParamMorph(surface, to: number[], opts?)` | `params` 从当前值补间到 `to`,每帧 `resample`;`ParametricCurve3D` 也能用 |
 
-- 匀速转圈写 `rateFunc: linear`。网格入场一律 `FadeIn`(先 `hide`)。
-- **旋转体环绕看不出变化**:`Cone`、`Cylinder`、`Sphere`、球面 / 环面绕 y 轴对称,转多少圈轮廓都不变,要靠俯仰显立体感;环绕留给 `Cube`、`Pyramid`、`Tetrahedron`、`TriangularPrism`、莫比乌斯带、自定义网格。
-- **没有俯仰动画**(`Orbit3D` 只转 `rotY`):照 7.11 写一个 `BasePlayable`:
+- 匀速转圈写 `rateFunc: linear`。网格入场一律 `FadeIn`(先 `hide`);3D 线条、坐标轴、标注还能 `Create`(9.6)。
+- **`ViewTo` 的规则**:`azimuth` / `elevation` 在构造时换成 `rotY` / `rotX`。`azimuth` 是方位,播放开始时取最短路径 —— `Orbit3D` 转过几圈后「回到课本视角」不会倒着再转几圈;`rotY` / `rotX` / `elevation` 照字面补间,要整圈环绕就给 `rotY` 或用 `Orbit3D`。一个键都不给、同时给 `rotY` 和 `azimuth`(或 `rotX` 和 `elevation`)、给非有限值,构造时就抛错。
+- **旋转体环绕看不出变化**:`Cone`、`Cylinder`、`Sphere`、球面 / 环面绕 y 轴对称,转多少圈轮廓都不变,要靠俯仰(`ViewTo` 改 `elevation` 或 `rotX`)显立体感;环绕留给 `Cube`、`Pyramid`、`Tetrahedron`、`TriangularPrism`、莫比乌斯带、自定义网格。
+
+```ts
+await env.play(new ViewTo(view, { rotX: -1.0 }, { runTime: 2.5 }));                         // 俯仰到更高:圆柱顶面的椭圆变圆
+await env.play(new ViewTo(view, { azimuth: Math.PI / 6, elevation: 0.45 }, { runTime: 3 })); // 回到课本视角(方位走最短路径)
+await env.play(new ViewTo(view, { viewDistance: 400 }, { runTime: 2 }));                     // 透视变强(不是放大;放大用 8.5 的运镜)
+```
+
+自定义 3D 动画照 7.11 写 `BasePlayable`。例如让 `Dot3D`(或任何 `Anchor3D`)沿一条 3D 线条走,按 3D 弧长,和同时长、同缓动的 `Create` 笔尖同步:
 
 ```ts
 import { BasePlayable } from '../engine';
-import type { AnimationOptions, Projection3D } from '../engine';
+import type { Anchor3D, AnimationOptions, Stroke3D } from '../engine';
 
-class TiltTo extends BasePlayable {
-  private readonly view: Projection3D;
-  private readonly to: number;
-  private from = 0;
-  constructor(view: Projection3D, to: number, options?: AnimationOptions) {
+class MoveAlong3D extends BasePlayable {
+  private readonly anchor: Anchor3D;
+  private readonly path: Stroke3D;
+  constructor(anchor: Anchor3D, path: Stroke3D, options?: AnimationOptions) {
     super(options);
-    this.view = view;
-    this.to = to;
-  }
-  override begin(): void {
-    this.from = this.view.rotX;
+    this.anchor = anchor;
+    this.path = path;
   }
   interpolate(alpha: number): void {
-    this.view.rotX = this.from + (this.to - this.from) * alpha;
+    const p = this.path.pointAt(alpha); // 按 3D 弧长比例取点(本地坐标)
+    if (p) {
+      this.anchor.setPoint(p);
+    }
   }
 }
-// await env.play(new TiltTo(view, -1.0, { runTime: 2.5 }));  // 俯仰到更高再回来,圆柱顶面的椭圆先变圆再变扁
+// await env.play(new Create(helix, { runTime: 4 }), new MoveAlong3D(pen, helix, { runTime: 4 }));  // 点跟着笔尖爬
 ```
 
 ### 9.6 3D 里的标注、辅助线与坐标轴
 
-**没有 3D 的点、线段、箭头、曲线,也没有 `ThreeDAxes`**。字母、高线、坐标轴用 2D 对象(`Tex`、`Label`、`Dot`、`Line`、`Arrow`、`Trace`)画,位置用网格内部同一个投影公式算(引擎没导出,抄下例的 `project3D`)。
+3D 线条(`Line3D`、`Arrow3D`、`Polyline3D`、`ParametricCurve3D`)、坐标轴 `Axes3D`、钉在 3D 点上的标注 `Anchor3D` / `Dot3D` 都持有一个 `Projection3D`:视角一变(`Orbit3D`、`Spin3D`、`ViewTo`、直接改 `view.rotX`),下一次绘制就跟着变,**不写 updater**;被网格挡住的部分自动画淡虚线。
+坐标一律是本地 3D 坐标(引擎坐标,9.1);课本坐标用 `axes.point(x, y, z)` 或 `mathPoint` 换算。全部从 `'../engine'` import;类型(`Vec3`、`Stroke3DOptions`、`Tips3D`、`HiddenStyle3D`、`Occlusion3DOptions`、`Curve3DFn`、`ParametricCurve3DOptions`、`Polyline3DOptions`、`Anchor3DOptions`、`Dot3DOptions`、`Axes3DOptions`、`Axis3DRange`、`ViewTarget`、`ProjectedPoint`)用 `import type`。
 
-- **视角一变投影就变**:`Orbit3D` / `Spin3D` / 俯仰播放时,标注要在 updater 里每帧重摆;用被标注网格的 `position` 和 `scale` 投影(网格在根上、`rotation` 为 0)。
-- **2D 对象不参与遮挡**:后加的总画在网格上面,背后顶点的字母照样可见(填色立体只给朝前的顶点标字)。
-- **坐标轴**:三条 `Arrow`,每帧把 `start` / `end` 设成原点和轴端点的投影。课本 Z 轴朝上:数学 (X, Y, Z) 写成引擎 (X, −Z, −Y)。**3D 曲线**:采样后每帧投影,交给 `trace.setPoints(…)`。
+**放进 Space3D(推荐)**
 
-正四棱锥标字母、作高 PO;非旋转体,用 `Orbit3D` 转半圈,标注靠 updater 跟着走;竖屏只换取景框(16.9 秒):
+`new Space3D(projection = new Projection3D())` 是一个 3D 空间(一个灭点)。`add` 进来的东西自动得到三件事:
+
+| 自动做的事 | 细节 |
+|---|---|
+| 统一视角 | 递归把网格、线条、标注的视角换成空间的(每次绘制再查一遍,晚加进嵌套组的也跟上);换视角用 `space.setProjection(view)` |
+| 网格先画 | 顶层子元素按「含网格的 → 含线条的 → 其它(标注、2D)」稳定重排,`add` 的先后无所谓。只在 `add` 时排:往已加入的嵌套组里再加网格不会重排 |
+| 自动遮挡 | 没显式给 `occluders` 的线条、刻度、标注,被空间里的全部网格遮挡 |
+
+- 空间自己的 `position` 就是灭点:里面的 3D 对象**留在 (0, 0)**,要挪就 `space.moveTo(…)`;不在原点时控制台告警一次(`[Space3D] … 不在空间原点`)。2D 对象可以放进来(画在最上层),也可以放在空间外面。
+- 并排的两个立体各放一个 `Space3D`(可以共用同一个 `Projection3D`)。`space.meshes()` 列出空间里的网格。
+- `Create(space)` 会抛错(网格不能 `Create`):对里面的线条、坐标轴、标注分别 `Create`。
+
+不用 `Space3D` 就自己守三条:同一个 `Projection3D` 交给所有对象;网格、线条、标注在同一个父节点、同一位置;**网格先加、线条后加**(线的可见部分总画在网格上面,先加的线会被填色网格盖住),要被挡住就把网格列进 `occluders`。
+
+**线条**
+
+| 类 | 签名 | 说明 |
+|---|---|---|
+| `Line3D` | `new Line3D(start: Vec3, end: Vec3, options?)` | `start` / `end` 是公共字段,每次绘制现读(可在 updater / `sweep` 里改) |
+| `Arrow3D` | `new Arrow3D(start: Vec3, end: Vec3, options?)` | `tips` 缺省 `'end'`;线宽为 0 时箭头照画 |
+| `Polyline3D` | `new Polyline3D(points: Vec3[], options?)` | 折线;`closed` 缺省 `false`(闭合时生长绕一圈回到起点);`setPoints(点[])` 整体替换,`points` 只读 |
+| `ParametricCurve3D` | `new ParametricCurve3D(fn: (t: number, params: number[]) => Vec3, tRange: [t0, t1], options?)` | 在 `tRange` 上等距采 `samples` 段(缺省 120,≥ 1 的整数);`t1 < t0` 反向生长;`params` 缺省 `[]`(要 `ParamMorph` 就给初值);`resample(params?)`、`getParams()`。返回 NaN 先挪一点重取(可去奇点不断开),仍非有限就在那里断笔 |
+
+线条的选项(四个类共用;`Polyline3D` 另有 `closed`,`ParametricCurve3D` 另有 `samples`、`params`):
+
+| 选项 | 缺省 | 说明 |
+|---|---|---|
+| `projection` | 各持一份 | 放进 `Space3D` 自动换成空间的 |
+| `tips` | `'none'`(`Arrow3D` 为 `'end'`) | `'none'` / `'end'` / `'both'` |
+| `headLength` / `headWidth` | 14 / 10 | 箭头长与底宽,本地 3D 单位,随透视缩放 |
+| `occluders` | 自动 | 挡住它的网格。不给:在 `Space3D` 里取空间内全部网格,不在就不遮挡;给 `[]` 关掉遮挡 |
+| `hidden` | `'dashed'` | 被挡住的部分:`'dashed'` 淡虚线(35% 不透明、`[5, 4]` 虚线;设了 `dash` 用自己的)、`'faded'` 调淡到 35%、`'none'` 不画、`'shown'` 不管遮挡 |
+| `depthTolerance` | 1.5 | 点要在遮挡面后方至少这么远(本地单位,沿面的法向)才算挡住;粗网格曲面上的曲线闪虚线就调大 |
+
+- 样式照常 `setStyle({ stroke, strokeWidth, dash })`,线宽缺省 2。`dash` 是屏幕空间的,不随透视缩短。
+- `line.length()` 是 3D 弧长;`line.pointAt(f)` 按 3D 弧长比例 f ∈ [0, 1] 取点(本地坐标;没有可画的点返回 `null`),把 `Dot3D`、`Anchor3D` 放到曲线上用。`setOccluders(网格[] | null)` 事后改遮挡(`null` 回到自动)。
+- 包围盒是当前投影的外接矩形,和网格一样随视角变。
+
+**坐标轴 Axes3D**
+
+`new Axes3D(options?)`:三条带箭头的轴线、屏幕空间的刻度、轴名。三条轴都过原点(区间不含 0 也一样)。
+
+| 选项 | 缺省 | 说明 |
+|---|---|---|
+| `frame` | `'math'` | `'math'`:右手系、z 朝上(9.1 的数学坐标);`'engine'`:引擎的 x 右、y 下、z 朝观众 |
+| `projection` | `'math'` 用 `Projection3D.math()`,`'engine'` 用 `new Projection3D()` | 放进 `Space3D` 自动换成空间的 |
+| `x` / `y` / `z` | `[-3, 3, 1]` | `[min, max, step?]`,`step` 缺省 1;一条轴要画 1000 个以上刻度时报错 |
+| `unit` | 40 | 一个坐标单位的本地长度 |
+| `tips` | `'end'` | 箭头画在区间外侧,不压最末的刻度 |
+| `ticks` / `tickSize` | `true` / 8 | 刻度是屏幕空间的短线(总长 8,不随透视),垂直于轴的投影;原点处不画;轴正对观众时那条轴的刻度不画 |
+| `labels` | `{ x: 'x', y: 'y', z: 'z' }` | 轴名,钉在轴端外侧;只给一个键(如 `{ z: 'h' }`)其余照缺省;某个给 `''` 不建那一个;`false` 全不要 |
+| `labelKind` | `'tex'` | 轴名和刻度数字排成 `Tex` 还是 `Label` |
+| `fontSize` | 24 | 轴名字号 |
+| `numbers` / `numberSize` | `false` / 14 | 刻度数字。每帧按当前视角排开,和已放下的数字或轴名挤在一起的这一帧不画(课本视角下透视缩短的 X 轴常常隔一个画一个) |
+| `occluders` / `hidden` / `depthTolerance` | 自动 / `'dashed'` / 1.5 | 同线条;轴线按 `hidden` 画,刻度的 `'dashed'` 按 `'faded'` 画;轴名和数字不被挡 |
+
+- `axes.point(x, y, z)` 把坐标系坐标换成本地 3D 坐标(相当于 2D 的 `toLocal`),曲面、曲线、点都拿它算;`axes.toMath(p)` 反过来。
+- `axes.curve(fn, [t0, t1], options?)`:`fn` 返回坐标系坐标 `{ x, y, z }`,得到一条 `ParametricCurve3D`(选项同上)。**它不在坐标轴的组里**:和坐标轴一起 `add` 进同一个 `Space3D`。
+- 零件:`axes.xAxis` / `yAxis` / `zAxis`(`Line3D`)、`axes.axisLabels`(`Anchor3D[]`)、`axes.numberAnchors`、`axes.tickCount`。`Create(axes)` 三条轴一起长,刻度从小到大依次出现。
+
+函数 z = f(x, y) 的图像(坐标轴在曲面下面的部分自动画虚线):
 
 ```ts
-// src/film/animPyramid.ts
-import { Create, FadeIn, Line, Orbit3D, Projection3D, Pyramid, Rectangle } from '../engine';
-import type { Point, Vec3 } from '../engine';
+const view = Projection3D.math();
+const space = new Space3D(view);
+const axes = new Axes3D({ x: [-2, 2], y: [-2, 2], z: [-1, 2], unit: 60 });
+const f = (x: number, y: number): number => Math.exp(-(x * x + y * y));
+const surface = new ParametricSurface((u, v) => axes.point(u, v, f(u, v)), {
+  uRange: [-2, 2],
+  vRange: [-2, 2],
+  uSegs: 24,
+  vSegs: 24,
+}).setStyle({ fill: '#bfdbfe', strokeWidth: 0.5 }); // 开放曲面要填色才挡线
+const slice = axes.curve((t) => ({ x: t, y: 0, z: f(t, 0) }), [-2, 2]).setStyle({ stroke: '#db2777' }); // y = 0 的截线
+const peak = new Dot3D(axes.point(0, 0, 1));
+space.add(surface, axes, slice, peak);
+```
+
+**标注 Anchor3D / Dot3D**
+
+`new Anchor3D(content: MObject | MObject[], point: Vec3, options?)` 把 2D 内容(`Tex`、`Label`、`Dot`……)钉在一个 3D 点的投影上,视角怎么变都跟着(取景量包围盒时也已在新位置)。
+
+| 选项 | 缺省 | 说明 |
+|---|---|---|
+| `projection` | 各持一份 | 同线条 |
+| `offset` | `{ x: 0, y: 0 }` | 屏幕空间偏移(本地单位) |
+| `away` | 不推 | 一个 3D 点:内容从它的投影往外推,包围盒最近的一边离锚点 `gap`(顶点字母从底面中心往外摆) |
+| `gap` | 10 | 配合 `away` |
+| `hidden` | `'shown'` | 锚点被网格挡住时:`'faded'`(`'dashed'` 同它)调淡到 35%、`'none'` 不画、`'shown'` 照常 |
+| `occluders` / `depthTolerance` | 自动 / 1.5 | 同线条 |
+
+- 内容自己的 `position` 是相对锚点的额外偏移,通常留在 (0, 0)(`tex('P', 24)` 不传位置)。`FadeIn`、`Create`、`Indicate`、`FadeTransform`、`Transform` 对锚点或内容照常用;`hide` 藏被 `FadeIn` 的那一层(一般是锚点)。
+- 换锚点:`anchor.setPoint(p)`(拷贝;`point` 也是公共字段),下次绘制生效 —— 在 `sweep` 的 `draw` 里改就能让字母沿曲线走。锚点自己的 `scale` / `rotation` 绕锚点作用(`ScaleTo(dot3d, 2)` 点变大、仍钉在原处)。
+- 遮挡只测锚点这一个点,不看字盖住的面积:转动时字在锚点被挡住的那一刻整个变淡。
+- `new Dot3D(point, options?)`:装着一个 `Dot` 的 `Anchor3D`;`radius` 缺省 5(屏幕空间,不随透视),颜色随 `stroke`,`dot3d.dot` 是里面的圆点。
+
+给立体标顶点、作高(`Pyramid` 的顶点按 9.2 在引擎坐标里算,y 向下);之后 `Orbit3D(view, 0.5)` 转半圈,字母和高线跟着走:
+
+```ts
+const view = new Projection3D({ rotX: -0.4, rotY: 0.5 });
+const space = new Space3D(view).moveTo({ x: 0, y: -30 });
+const a = 160; // 底面边长
+const h = 150; // 高
+const P: Vec3 = { x: 0, y: -h / 2, z: 0 }; // 尖顶
+const O: Vec3 = { x: 0, y: h / 2, z: 0 }; // 底面中心
+const corners: Vec3[] = [[-1, 1], [1, 1], [1, -1], [-1, -1]].map(([sx = 0, sz = 0]) => ({ x: (sx * a) / 2, y: h / 2, z: (sz * a) / 2 })); // A B C D
+const pyramid = new Pyramid(a, h).setStyle({ stroke: '#2563eb' });
+const height = new Line3D(P, O).setStyle({ stroke: '#db2777' }); // 在锥体里面:自动画淡虚线
+const names = corners.map((c, i) => new Anchor3D(tex('ABCD'[i] ?? '', 24), c, { away: O, gap: 8 })); // 从底面中心往外推
+const apex = new Anchor3D(tex('P', 24), P, { offset: { x: 0, y: -18 } });
+space.add(pyramid, height, ...names, apex);
+```
+
+**遮挡**
+
+- 线上每个点自己判断:视点到它的连线是否先穿过某个遮挡网格的三角形。线的可见部分画在网格上面,被挡部分按 `hidden` 画;网格照旧自己画自己。
+- **谁挡**:显式的 `occluders`,否则 `Space3D` 里的全部网格。线不挡线,网格之间仍不遮挡(9.7)。
+- **挡多少**:填色网格 = 网格的 `opacity` × 填充色的 alpha(半透明截面只挡一部分;网格 `FadeIn` 时身后的线平滑变虚)。不填色的**封闭**网格(立体线框)照样全挡,棱锥里的高线画虚线;不填色的**开放**曲面不挡 —— 要曲面挡住身后的轴和曲线,就给它 `fill`。只看网格自身的 `opacity`,不看祖先组的。
+- 遮挡网格必须和线共用同一个 `Projection3D` 实例(否则告警一次、这个网格不参与),并在同一个画框里(否则告警一次、仍按同一画框算,结果会错位)。
+- 画在曲面上的曲线(用同一个 `axes.point`,或 `surface.pointAt(u, v)` 采样)不会被自己所在的曲面判成挡住:容差沿面的法向量,斜着看也一样;网格很粗时调大 `depthTolerance`。
+
+**Create**
+
+- 3D 线条按 **3D 弧长**生长:视角边转边长时,笔尖钉在同一个 3D 点上;终点箭头跟着笔尖走,`'both'` 的两个箭头从一开始就在。`pace` 对 3D 线条不起作用(7.3)。
+- `Axes3D`、`Anchor3D`、`Dot3D` 也能 `Create`(内容能生长就行);网格不能,含网格的组(如 `Space3D`)也不能。
+- 和 2D 一样,先 `unrevealed(…)` 再 `Create`。
+
+圆柱面上的螺旋线:坐标轴 `Create`、填色圆柱淡入、螺旋线按 3D 弧长长出来(转到背后的一段自动画淡虚线,圆柱里的 z 轴也是),虚线标出螺距,`Dot3D` 和 `Anchor3D` 标字母,最后 `ViewTo` 降到侧面看;竖屏只换取景框和公式的位置(20.1 秒):
+
+```ts
+// src/film/lines3dDemo.ts
+import { Anchor3D, Axes3D, Create, Dot3D, FadeIn, Line3D, ParametricSurface, Projection3D, Rectangle, Space3D, ViewTo, lightTheme } from '../engine';
 import type { Segment } from './film';
 import { directedSegment } from './film';
 import { hide, isNarrow, stage, tex, unrevealed } from './helpers';
 
-// 3D 点 → 画面 2D 点(网格内部同一公式);origin / scale 传网格的 position / scale。
-export function project3D(view: Projection3D, origin: Point, p: Vec3, scale = 1): Point {
-  const cosY = Math.cos(view.rotY);
-  const sinY = Math.sin(view.rotY);
-  const cosX = Math.cos(view.rotX);
-  const sinX = Math.sin(view.rotX);
-  const x1 = p.x * cosY + p.z * sinY; // 先绕 y 轴转 rotY
-  const z1 = -p.x * sinY + p.z * cosY;
-  const y = p.y * cosX - z1 * sinX; // 再绕 x 轴转 rotX
-  const z = p.y * sinX + z1 * cosX;
-  const d = view.viewDistance;
-  const s = d / Math.max(d * view.nearRatio, d - z); // 透视
-  return { x: origin.x + x1 * s * scale, y: origin.y + y * s * scale };
-}
+const H = 1.2; // 螺距:绕一圈升高 H
+const START = 1; // 起点的方位角(弧度),在朝观众偏右的一侧
 
-// 1.5 入场 + 1 标注 + 0.5 + 5 环绕 + 0.5 + 1.2 作高 + 1.5 + 1.2 公式 + 4.5 停留 = 16.9。
-export const pyramidLabels: Segment = directedSegment(
-  '正四棱锥',
-  16.9,
+// 1.5 坐标轴 + 1.2 圆柱 + 0.5 + 1 起点 + 4 螺旋线 + 0.5 + 1.2 螺距 + 1.5 + 3 换视角 + 0.5 + 1.2 结论 + 4 停留 = 20.1。
+export const helixSegment: Segment = directedSegment(
+  '圆柱螺旋线',
+  20.1,
   [
-    { start: 0.2, end: 2.8, text: '正四棱锥 P-ABCD' },
-    { start: 3.1, end: 7.9, text: '底面 ABCD 是正方形' },
-    { start: 8.2, end: 11.1, text: '高 PO 垂直于底面' },
-    { start: 11.4, end: 16.6, text: '体积是底面积乘高的三分之一' },
+    { start: 0.2, end: 3.0, text: '圆柱面上的螺旋线' },
+    { start: 3.3, end: 8.2, text: '从 P₀ 出发,绕着圆柱往上爬' },
+    { start: 8.5, end: 11.3, text: '一圈升高 h,叫做螺距' },
+    { start: 11.6, end: 14.7, text: '从侧面看:每圈都升高 h' },
+    { start: 15.0, end: 19.9, text: '高度与转过的角度成正比' },
   ],
   async (env) => {
-    const view = new Projection3D({ rotX: -0.4, rotY: 0.5 });
-    const a = 160; // 底面边长
-    const h = 150; // 高
-    const pyramid = new Pyramid(a, h, { projection: view }).setStyle({ stroke: '#2563eb' }).moveTo({ x: 0, y: -30 });
-    const P: Vec3 = { x: 0, y: -h / 2, z: 0 }; // 尖顶(y 向下)
-    const O: Vec3 = { x: 0, y: h / 2, z: 0 }; // 底面中心
-    const corners: Vec3[] = [[-1, 1], [1, 1], [1, -1], [-1, -1]].map(([sx = 0, sz = 0]) => ({ x: (sx * a) / 2, y: h / 2, z: (sz * a) / 2 })); // A B C D
-    const at = (p: Vec3): Point => project3D(view, pyramid.position, p, pyramid.scale);
+    env.scene.setTheme({ ...lightTheme, showGrid: false, showAxes: false });
+    const view = Projection3D.math({ elevation: 0.6 }); // 课本视角(X 朝左下、Y 朝右、Z 朝上),抬高一点
+    const space = new Space3D(view).moveTo({ x: 0, y: 70 }); // 挪就挪整个空间,里面的对象都留在原点
+    const axes = new Axes3D({ x: [-2, 2], y: [-2, 2], z: [0, 3], unit: 70 });
+    // 曲面、曲线、点都用 axes.point(x, y, z) 换算(数学坐标,z 朝上)。
+    const tube = new ParametricSurface((u, v) => axes.point(Math.cos(u), Math.sin(u), v), {
+      uRange: [0, 2 * Math.PI],
+      vRange: [0, 2 * H],
+      uSegs: 36,
+      vSegs: 4,
+    }).setStyle({ fill: '#dbeafe', stroke: '#93c5fd', strokeWidth: 0.5 }); // 填了色才挡住身后的线
+    // 转过角度 θ 时升高 Hθ/2π。
+    const helix = axes
+      .curve((t) => ({ x: Math.cos(START + t), y: Math.sin(START + t), z: (H * t) / (2 * Math.PI) }), [0, 4 * Math.PI], { samples: 240 })
+      .setStyle({ stroke: '#2563eb', strokeWidth: 3 });
+    const p0 = axes.point(Math.cos(START), Math.sin(START), 0);
+    const p1 = axes.point(Math.cos(START), Math.sin(START), H); // 绕一圈后在 P₀ 正上方
+    const pitch = new Line3D(p0, p1).setStyle({ stroke: '#db2777', dash: [6, 5] });
+    const dot0 = new Dot3D(p0).setStyle({ stroke: '#db2777' });
+    const dot1 = new Dot3D(p1).setStyle({ stroke: '#db2777' });
+    const name0 = new Anchor3D(tex('P_0', 24), p0, { away: p1, gap: 8 }); // 从 P₁ 往外推:永远在 P₀ 正下方
+    const name1 = new Anchor3D(tex('P_1', 24), p1, { offset: { x: -18, y: -16 } });
+    const hName = new Anchor3D(tex('h', 24), axes.point(Math.cos(START), Math.sin(START), H / 2), { offset: { x: 16, y: 0 } });
+    space.add(axes, tube, helix, pitch, dot0, dot1, name0, name1, hName); // 网格自动排到最前,线条自动被圆柱遮挡
 
-    const names = ['A', 'B', 'C', 'D'].map((s) => tex(s, 24));
-    const apex = tex('P', 24);
-    const foot = tex('O', 22);
-    const height = new Line(at(P), at(O)).setStyle({ stroke: '#db2777', dash: [6, 5] });
-    const place = (): void => {
-      const o = at(O);
-      corners.forEach((c, i) => {
-        const v = at(c);
-        const len = Math.hypot(v.x - o.x, v.y - o.y) || 1;
-        names[i]?.moveTo({ x: v.x + ((v.x - o.x) / len) * 20, y: v.y + ((v.y - o.y) / len) * 20 }); // 从底面中心往外推 20
-      });
-      apex.moveTo(at({ x: 0, y: P.y - 22, z: 0 }));
-      foot.moveTo({ x: o.x + 16, y: o.y + 4 });
-      height.start = at(P);
-      height.end = o;
-    };
-    place(); // 先摆好再取景
+    const narrow = isNarrow(env.scene);
+    const formula = tex('z = \\dfrac{h}{2\\pi}\\,\\theta', 34, narrow ? { x: 0, y: 250 } : { x: 250, y: 0 });
+    unrevealed(axes, helix, pitch);
+    hide(tube, dot0, dot1, name0, name1, hName, formula);
+    // 换视角时包围盒会变:取景框按两个视角的最大范围兜住(竖屏分支只换它和公式的位置)。
+    const frame = narrow ? new Rectangle(420, 700).moveTo({ x: 0, y: 40 }) : new Rectangle(760, 440).moveTo({ x: 60, y: 0 });
+    stage(env.scene, [space, formula], 20, [frame]);
 
-    const formula = tex('V = \\tfrac{1}{3}\\, S_{ABCD} \\cdot PO', 34, { x: 0, y: 170 });
-    hide(pyramid, ...names, apex, foot, formula);
-    unrevealed(height);
-    const frame = isNarrow(env.scene) ? new Rectangle(450, 800) : new Rectangle(800, 450); // 竖屏分支:只换取景框
-    stage(env.scene, [pyramid, height, ...names, apex, foot, formula], 30, [frame]); // 2D 对象后加,画在网格上面
-    env.scene.addUpdater(place); // 标注每帧重摆
-
-    await env.play(new FadeIn(pyramid, { runTime: 1.5 }));
-    await env.play(...[...names, apex].map((n) => new FadeIn(n)));
+    await env.play(new Create(axes, { runTime: 1.5 }));
+    await env.play(new FadeIn(tube, { runTime: 1.2 }));
     await env.wait(0.5);
-    await env.play(new Orbit3D(view, 0.5, { runTime: 5 }));
+    await env.play(new FadeIn(dot0), new FadeIn(name0));
+    await env.play(new Create(helix, { runTime: 4 }));
     await env.wait(0.5);
-    await env.play(new Create(height, { runTime: 1.2 }), new FadeIn(foot, { runTime: 1.2 }));
+    await env.play(new Create(pitch, { runTime: 1.2 }), ...[dot1, name1, hName].map((m) => new FadeIn(m, { runTime: 1.2 })));
     await env.wait(1.5);
+    await env.play(new ViewTo(view, { elevation: 0.2 }, { runTime: 3 })); // 降到侧面:螺旋线看起来像一条波浪线
+    await env.wait(0.5);
     await env.play(new FadeIn(formula, { runTime: 1.2 }));
-    await env.wait(4.5);
+    await env.wait(4);
   },
 );
 ```
 
 ### 9.7 限制与性能
 
-- **不支持 `Create`**:所有 3D 网格 begin 时抛错,入场用 `FadeIn`。
+- **网格不支持 `Create`**:所有 3D 网格 begin 时抛错,入场用 `FadeIn`。3D 线条、坐标轴、标注可以 `Create`(9.6)。
 - **网格之间没有遮挡**:不同网格按加入顺序整块叠画。嵌套或交叠的立体(球内切于圆柱)画不对:并排摆开;或里层填色、外层只画线框,并**先加里层、后加外层**。
-- **隐藏线只做背面剔除**,凹处自遮挡不处理。**包围盒随视角变**:转动时轮廓会变的(正方体转 45° 约宽 1.4 倍)按最大轮廓留余量或用取景框。
-- **重建成本**:`ImplicitSurface` 缺省 `resolution` 22 每次约 2 毫秒(40 约 6 毫秒),参数曲面约 0.1 毫秒;预览、跳转、导出都从头重放,形变段会慢些,时长不受影响。
+- **线条只被网格挡**:线不挡线;标注只测锚点一个点,刻度只测中心点;遮挡强度只看网格自身的 `opacity`(祖先组淡出时网格照样挡)。沿立体轮廓走的线转动时可能虚实闪动,改 `hidden: 'faded'` 或 `occluders: []`。
+- **隐藏线只做背面剔除**(网格自己的边),凹处自遮挡不处理。**包围盒随视角变**:转动时轮廓会变的(正方体转 45° 约宽 1.4 倍)按最大轮廓留余量或用取景框;线条、坐标轴、标注也一样,会转视角的段在 `stage` 的第 4 个参数放一个取景框。
+- **每个对象一个灭点**(9.1):线条、标注和网格不在同一个画框就对不上,遮挡也会算错 —— 放进同一个 `Space3D`、都留在原点。
+- **变形用的是视角快照**:对 3D 线条做 `Transform` / `Write`,取的是开始那一刻视角下的投影路径,播放中视角再变,变形不跟;屏幕空间的 `dash` 相位随视角移动(网格的隐藏边也一样)。
+- **近平面**:离视点不到 viewDistance × nearRatio(缺省 140)的点不再透视放大,线上这样的点一律当作看得见;几何别伸到这么近。
+- **重建成本**:`ImplicitSurface` 缺省 `resolution` 22 每次约 2 毫秒(40 约 6 毫秒),参数曲面约 0.1 毫秒;预览、跳转、导出都从头重放,形变段会慢些,时长不受影响。遮挡索引每个网格在视角或几何变了时重建一次(转动时每帧一次,所有线条共用),每条线每帧最多探测 2048 个点:24×24 填色曲面 + 坐标轴 + 曲线 + 5 个标注,转动时每帧约 1 毫秒(不含画布绘制)。
 
 ## 10. 配音
 
@@ -4329,7 +4777,7 @@ export const pyramidLabels: Segment = directedSegment(
 | 台词 id | `lines[].id` | 字幕的 `id`;没写时是 `<分段id>/<序号>`(从 1 起,如 `片头/1`) |
 | 时长 | 由时间表定;没有时按草稿 | 手写 `duration`,不迁就配音;表里的时长差 0.25 秒以上只提醒,多出的声音截掉 |
 | 字幕 | 起止来自时间表或草稿;文字 = 台词去掉 `<mark>` | 表里写了 `lines` 就换成表的起止;**文字按序号取原字幕**(不按 id) |
-| 对齐 | `await env.untilLine(id)` / `env.untilMark(id, 'k')` | 不对齐:每句从自己字幕窗口开头说起,不撞下一句开口或段尾 |
+| 对齐 | `await env.untilLine(id)` / `env.untilMark(id, 'k')`;跟着台词伸缩的动画 `env.playUntil(目标, …)` / `env.playThrough(id, …)` | 不对齐:每句从自己字幕窗口开头说起,不撞下一句开口或段尾 |
 | `<mark name="k"/>` | 就是提示点 | 没用,会原样显示 |
 
 下文的例子是影片 `appx-voice`:固定时长段 `parabola`(`directedSegment` 写死 `{ id: 'parabola' }`,8 秒 = FadeIn 1 + Create 2 + 停 0.5 + FadeIn 1 + 停 3.5;字幕 0.2–3.3「先画出一条抛物线。」、3.6–7.8「它的方程是 y 等于 x 的平方。」,即 `parabola/1`、`parabola/2`),加上这段:
@@ -4347,20 +4795,21 @@ const slope = timedSegment({
   await env.untilLine('slope-1');
   await env.play(new FadeIn(dot, { runTime: 0.6 }));
   await env.untilMark('slope-1', 't'); // 正好说到「切线」
-  await env.play(new Create(tangent, { runTime: Math.max(0.6, env.remaining('slope-1')) }));
+  await env.playUntil({ end: 'slope-1', min: 0.6 }, new Create(tangent)); // 切线画到这句说完(至少 0.6 秒)
   await env.untilLine('slope-2');
   await env.play(new FadeIn(k, { runTime: 0.8 }));
-  await env.play(new Indicate(k, { runTime: Math.max(0.6, env.remaining('slope-2')) }));
+  await env.playUntil({ end: 'slope-2', min: 0.6, max: 1.2 }, new Indicate(k)); // 强调约 1 秒,静止到这句说完
   await env.wait(3); // 收尾停留写进脚本:段尾只自动留约 0.6 秒
 });
 ```
 
-没有时间表时草稿 10.5 秒(两句 0.3–3.04、3.29–7.52,再停 3 秒)。
+没有时间表时草稿约 10.5 秒(两句 0.3–3.04、3.29–7.52,再停 3 秒)。
 
 **脚本写法**:
 - 跟某句同步的动画前写 `await env.untilLine(id)`;踩某个词就在台词里放 `<mark name="k"/>`、脚本写 `await env.untilMark(id, 'k')`。没等的句子接在上一句后说。
-- 跟着台词伸缩的 runTime 写 `Math.max(下限, env.remaining(id))`(`remaining` 可能是 0),且先 `untilLine` 再用(否则等开口的时间也算进去)。要在某个词之前做完,用比例(`env.remaining(id) * 0.6`)或等那个标记,**别写「句尾减常数」**:配音一慢就不够。
-- 该伸缩的是有过程的动画(`Create`、`Write`);强调保持约 1 秒,上例末尾的 `Indicate` 只为演示。
+- 跟着台词伸缩的动画写「在哪儿收住」:`await env.playUntil({ end: id }, 动画)` 画到这句说完,`{ line: id, mark: 'k', lead: 0.3 }` 在那个词前 0.3 秒画完,`{ start: id }` 画到那句开口;整句都在画用 `env.playThrough(id, 动画)`。引擎按目标算时长,返回时正好在目标上,草稿和配音同一条规则。**别拿 `env.remaining(id)` 乘比例、减常数**:那是按草稿速度猜的,配音一快一慢就对不上,还会让台词稿记错动画要的时间(10.3 里旧写法就因此报「动画比时间表长」)。
+- 该伸缩的是有过程的动画(`Create`、`Write`、`TweenValue`);强调用 `max` 封顶,上例 `max: 1.2`:强调约 1 秒,之后静止到这句说完。
+- 按顺序 `await`;要同时动的放进同一次 `playUntil`(几个动画同时开始、按比例伸缩)。并发的 `playUntil` 能播,但台词稿里的 `needs` 会不准。
 
 固定时长分段的字幕写成念得出来的样子(「y 等于 x 的平方」,不写「y=x²」),窗口按约 4.5 字/秒留够;给字幕写 `id`,插删字幕就不打乱台词 id。
 
@@ -4401,11 +4850,12 @@ npm run voice:script -- appx-voice --out script.json   # 《appx-voice》:2 段,
 ```bash
 npm run voice:layout -- script.json measured.json --out public/voice/appx-voice/timing.json
 npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
-# ✗ 错误 [slope] 动画比时间表长 0.38 秒:动画 11.03 秒才跑完,时间表只给了 10.656 秒
-# 1 个错误,0 个提醒:时间表还不能交付
+# ✓ 时间表没有问题
 ```
 
-`slope-2` 念了 4.6 秒(草稿 4.23),最后一个提示点之后按 `remaining('slope-2')` 定长的 `Indicate` 跟着变长,排期的 `tail` 却按草稿算。把表里 `slope` 的 `"duration": 10.656` 改成 `11.1`,再跑就是 `✓ 时间表没有问题`。
+`slope-2` 念了 4.6 秒(草稿 4.23),排在 3.45–8.05;强调在开口后 0.8 + 1.2 秒内做完,之后静止到 8.05。段长 11.061 = 8.05 + 最后停留的 3.011 秒(台词稿的 `tail` 只记脚本最后写的 `wait(3)`,跟着台词伸缩的部分不算进去,配音快慢都成立)。
+
+对照旧写法 `new Indicate(k, { runTime: Math.max(0.6, env.remaining('slope-2')) })`:台词稿把按草稿速度拉长的强调算进了 `tail`(7.206 秒),配音一慢,同样的实测排出来只有 10.656 秒,`voice:check` 报 `✗ 错误 [slope] 动画比时间表长 0.38 秒:动画 11.03 秒才跑完,时间表只给了 10.656 秒`。这就是别拿 `remaining` 算时长的原因。
 
 **固定时长段说太长了**:假如 `parabola/1` 念了 3.6 秒,`voice:layout` 报 `台词「parabola/1」说了 3.6 秒,这段动画时长固定,它会撞上下一句(3.6 秒开口):请压缩到 3.4 秒以内`;写出的表里 `end` 截成 3.6,声音却放到 3.8 秒、和下一句叠 0.2 秒。差零点几秒就**压缩音频**(提速重合成、剪静音);差得多就**加长分段**:下一句字幕和之后的动画往后挪、`duration` 跟着加(本例停 0.5 改 0.9,第二句改 4.0–8.2,时长 8.4),重新 `voice:script`、重新排期,音频不用重录。
 
@@ -4415,14 +4865,15 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
 
 ```
 {
-  "id": "slope", "name": "切线的斜率", "kind": "timed", "duration": 10.5,
+  "id": "slope", "name": "切线的斜率", "kind": "timed", "duration": 10.533,
   "lines": [
     { "id": "slope-1", "text": "在 x 等于 1 处画一条<mark name=\"t\"/>切线。", "plain": "在 x 等于 1 处画一条切线。", "marks": ["t"],
-      "draft": { "start": 0.3, "end": 3.044, "marks": { "t": 2.3 } }, "needsBefore": 0, "markNeeds": { "t": 0.6 } },
-    { "id": "slope-2", …, "marks": [], "draft": { "start": 3.294, "end": 7.522 }, "needsBefore": 0.733 }
+      "draft": { "start": 0.3, "end": 3.044, "marks": { "t": 2.3 } }, "needsBefore": 0, "markNeeds": { "t": 0.6 }, "needsEnd": 0.633 },
+    { "id": "slope-2", …, "marks": [], "draft": { "start": 3.294, "end": 7.522 }, "needsBefore": 0.022, "needsEnd": 1.372 }
   ],
-  "cues": [{ "line": "slope-1", "needs": 0 }, { "line": "slope-1", "mark": "t", "needs": 0.6 }, { "line": "slope-2", "needs": 0.733 }],
-  "tail": 7.206
+  "cues": [{ "line": "slope-1", "needs": 0 }, { "line": "slope-1", "mark": "t", "needs": 0.6 }, { "line": "slope-1", "end": true, "needs": 0.633 },
+           { "line": "slope-2", "needs": 0.022 }, { "line": "slope-2", "end": true, "needs": 1.372 }],
+  "tail": 3.011
 }
 ```
 
@@ -4431,14 +4882,15 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
 | `kind` / `duration` | `timed`:时长由配音定,`duration` 是草稿(参考);`fixed`:`duration` 是动画时长,定死 |
 | `lines[].plain` | **照着念这个**(标记不念) |
 | `lines[].draft` | 草稿时间(相对本段);fixed 段就是字幕窗口 |
-| `cues` | 提示点顺序;`needs` = 从上一个提示点(或段首)到这里动画至少要的秒数(`needsBefore` / `markNeeds` 是按句列的同一个数) |
+| `cues` | 提示点顺序;`needs` = 从上一个提示点(或段首)到这里动画至少要的秒数(`needsBefore` / `markNeeds` / `needsEnd` 是按句列的同一个数)。没有 `mark` 的是「这句开口」;带 `"end": true` 的是**句尾提示点**(`playUntil` / `playThrough` 画到这句说完):这句说完不早于上一个提示点 + `needs` |
+| `lines[].needsEnd` | 这句第一个句尾提示点的 `needs`(脚本没有画到这句说完时省略) |
 | `tail` | 最后一个提示点之后动画还要的秒数 |
 
-上例:第一句开口后至少 0.6 秒才能说到「切线」,之后至少 0.733 秒第二句才能开口,第二句开口后动画还要 7.206 秒。
+上例:第一句开口后至少 0.6 秒才能说到「切线」,之后至少 0.633 秒(切线至少画 0.6 秒,多出的是帧取整)第一句才该说完;第二句几乎不用等就能开口,开口后至少 1.372 秒(淡入 0.8 + 强调至少 0.6)才该说完;最后还要停 3.011 秒。
 
 **实测 `measured.json`** 的格式见 10.3 的例子。
 
-**时间表 `timing.json`**(交付物;Schema 在 `docs/voice-timing.schema.json`)。上例修好后,每句一个音频:
+**时间表 `timing.json`**(交付物;Schema 在 `docs/voice-timing.schema.json`)。上例 `voice:layout` 排出来的,每句一个音频:
 
 ```json
 {
@@ -4448,7 +4900,7 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
     { "id": "parabola", "duration": 8, "lines": [
       { "id": "parabola/1", "text": "先画出一条抛物线。", "start": 0.2, "end": 2.6, "audio": "parabola-1.m4a" },
       { "id": "parabola/2", "text": "它的方程是 y 等于 x 的平方。", "start": 3.6, "end": 7.1, "audio": "parabola-2.m4a" } ] },
-    { "id": "slope", "duration": 11.1, "lines": [
+    { "id": "slope", "duration": 11.061, "lines": [
       { "id": "slope-1", "text": "在 x 等于 1 处画一条<mark name=\"t\"/>切线。", "start": 0.3, "end": 3.2, "audio": "slope-1.m4a", "marks": { "t": 2.3 } },
       { "id": "slope-2", "text": "它的斜率是 2,正好是 2x 在这一点的值。", "start": 3.45, "end": 8.05, "audio": "slope-2.m4a" } ] }
   ]
@@ -4472,7 +4924,7 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
 
 - **id** 照抄台词稿。**时间**一律是秒、相对本段开头;段内按开口排序、互不重叠,`0 ≤ start < end ≤ duration`(只有 `end ≤ duration` 有 0.05 秒容差;下一句 `start` 早于上一句 `end` 哪怕 0.001 秒也算重叠,整段作废)。
 - **标记**:每个 `<mark>` 都在 `marks` 里给出时刻,落在这句起止之内。没给的按字数比例估,落在外面的收进来,都给提醒。
-- **timed 段**的时长由配音方定,但要满足动画:按 `cues` 顺序,每个提示点时刻(整句 = 那句的 `start`,标记 = 那个词的时刻)≥ 上一个提示点 + `needs`;`duration` ≥ 最后一个提示点 + `tail`,也 ≥ 最后一句说完(最后一个提示点之后有跟着台词伸缩的动画时,以 `voice:check` 为准)。建议段首 ≥ 0.3、句间 ≥ 0.25、段尾 ≥ 0.6 秒。
+- **timed 段**的时长由配音方定,但要满足动画:按 `cues` 顺序,每个提示点时刻(整句 = 那句的 `start`,标记 = 那个词的时刻)≥ 上一个提示点 + `needs`;句尾提示点(`"end": true`)= 那句的 `end`,也该 ≥ 上一个提示点 + `needs`,做不到只是提醒(动画比这句多播一会儿);下一个提示点从 max(这个时刻, 上一个提示点 + `needs`) 算起。`duration` ≥ 最后一个提示点 + `tail`,也 ≥ 最后一句说完(拿 `remaining` 定长的旧脚本,以 `voice:check` 为准)。建议段首 ≥ 0.3、句间 ≥ 0.25、段尾 ≥ 0.6 秒。
 - **fixed 段**:`duration` 照抄台词稿;每句从自己字幕窗口开头说起,不说进下一句开口,也不超过段尾。
 - **音频**:mp3、m4a(AAC)、wav、ogg(Opus),以浏览器能解码为准;单声道 / 立体声、44.1 / 48 kHz 都行。
 - **路径**相对 `timing.json` 所在目录。别用 `/` 开头(`voice:check` 当成文件系统绝对路径,误报不存在);完整网址放在别的域名下要开 CORS,否则播放和导出都读不到。
@@ -4492,7 +4944,8 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
 | `分段「名」(id「x」)在时间表里没有:它会按草稿时间播,没有声音` | timed 段 id 没对上,或因结构错误被丢 → 核对 id,先修结构错误 |
 | `时间表缺少台词 「a」「b」,这一段先按草稿时间播(没有声音)` | 补上缺的句子 |
 | `音频文件「f」不存在` | 路径相对 timing.json,别用 `/` 开头,在最终位置校验 |
-| `动画来不及:第 N 个提示点(台词「x」开口 / 台词「x」的标记「k」)排在 A 秒,动画 B 秒才走到,晚了 C 秒` | 把那句(或那个词)往后挪 C 秒 |
+| `动画来不及:第 N 个提示点(台词「x」开口 / 台词「x」的标记「k」)排在 A 秒,动画 B 秒才走到,晚了 C 秒` | 把那句(或那个词)往后挪 C 秒。写成「台词「x」开口,playUntil 让它在调用时开口」的:脚本没写 `untilLine`,`playUntil` 画到这句说完 / 某个标记时它还没开口,按约定在调用时开口 |
+| `动画收不住:第 N 个提示点(台词「x」开口 / 台词「x」的标记「k」)排在 A 秒,playUntil 的动画 F 秒开始、至少要 M 秒,晚了 C 秒` | `playUntil` / `playThrough` 的动画在那句开口 / 那个词之后才收住 → 把那句(或那个词)往后挪 C 秒,或调小 `min` / `lead` |
 | `动画比时间表长 C 秒:动画 B 秒才跑完,时间表只给了 D 秒` | `duration` 至少加 C 秒 |
 | `台词「x」到 E 秒才结束,超出了这段动画的 D 秒(会被截断)` | fixed 段:压缩这句,或加长分段、重新导出台词稿 |
 | `按时间表干跑时脚本出错:…` / `按时间表干跑 X 秒还没结束` / `没有干跑环境,排不了草稿:…` / `排草稿失败,这一段按字数估的时长播:…` | 脚本的问题 → 先跑内容测试,修脚本 |
@@ -4507,8 +4960,9 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
 | `这一段的动画时长固定为 D 秒,时间表写的是 T 秒:按动画时长播,多出的声音会被截掉` | fixed 段时长不能变 |
 | `时间表有 N 句,分段字幕有 M 条:按时间表的句子显示字幕` | 字幕文字按序号取原字幕,多出的原字幕被丢掉 |
 | `第 N 句的 id 应该是「分段/N」,时间表写的是「x」` | fixed 段台词 id 写错 |
+| `动画时间不够:第 N 个提示点(台词「x」说完 / …)排在 A 秒,playUntil 的动画 F 秒开始、要 M 秒(+ 提前 L 秒),差 S 秒(动画比这句多播 C 秒 / 提前量不足)` | 句尾目标,或只差提前量:能播,只是动画比这句长、收得不够早 → 可不管;要对齐就让这句说慢一点,或调小 `min` / `lead` |
 
-**只在 `voice:layout` 出现**(前两条之后 `voice:check` 不会再报,必须在排期时修;后两条不处理,`voice:check` 会报「动画来不及」):
+**只在 `voice:layout` 出现**(前两条之后 `voice:check` 不会再报,必须在排期时修;「开口」「标记」两条不处理,`voice:check` 会报「动画来不及」;「说完」那条 `voice:check` 以「动画时间不够」再提醒):
 
 | 原文 | 级别 → 怎么办 |
 | --- | --- |
@@ -4517,8 +4971,9 @@ npm run voice:check -- appx-voice public/voice/appx-voice/timing.json
 | `台词「x」比字幕窗口长 C 秒(没撞上下一句,可以接受)` | 提醒 → 可不管 |
 | `第 N 个提示点(台词「x」开口)排在 A 秒,动画要到 B 秒才走到` | 提醒 → 手动把这句往后挪 |
 | `标记「k」在这句里说得太早:动画还要 C 秒才走到。请在这个词前面加 C 秒停顿(或把这句拆成两段音频)` | 提醒 → 照做 |
+| `第 N 个提示点(台词「x」说完)排在 A 秒,动画要到 B 秒才收住:动画会比这句多播 C 秒(可以接受;要对齐就调小 min,或让这句说慢一点)` | 提醒 → 可不管 |
 
-`voice:script` 报 `分段 id「x」重复:配音会对不上,请给其中一段设一个不同的 id`:两个固定时长分段同名(如都叫「小结」),给其中一个 `directedSegment` 设 `{ id }` 或改名;`分段「名」排草稿失败,台词稿里只有按字数估的时间:…` → 修脚本。
+`voice:script` 报 `分段 id「x」重复:配音会对不上,请给其中一段设一个不同的 id`:两个固定时长分段同名(如都叫「小结」),给其中一个 `directedSegment` 设 `{ id }` 或改名;`分段「名」排草稿失败,台词稿里只有按字数估的时间:…` → 修脚本;提醒 `草稿里动画时间不够:playUntil(台词「x」说完):…` → 草稿里就收不住,配音一快更紧:调小 `min` / `lead`,或换个更晚的目标。
 
 ### 10.7 在页面上听
 
@@ -4600,6 +5055,9 @@ handle.audio;                     // { status, codec?, reason?, note?, failed? }
 
 两条路的合成(白场、字幕、进度条)与预览相同。
 
+- **图片不会让导出失败**:`loadImage` 按 CORS 取字节再解码,画上画布的都是干净像素;跨源地址没开 CORS 在**预加载时**就报错(页面红条,见 [6.12](#612-图片与-svg-插画)),不会录到一半才坏。
+  只有绕过加载器、自己 `drawImage` 画跨源图才会污染画布:实时录制报 `tainted`,离线导出报 `encoder`(`视频编码失败:…`)。把没开 CORS 的跨源 `<img>` 交给 `createImageAsset`,它当场抛 `AssetError('tainted')`。
+
 ### 11.5 成片里的配音
 
 配音问题**不会**让导出失败,结果在 `handle.audio`(`done` 之后才是定论);页面用 `exportAudioMessage()`(`src/sceneRegistry.ts`)生成提示条和读屏文字。
@@ -4652,12 +5110,45 @@ handle.audio;                     // { status, codec?, reason?, note?, failed? }
 | `分段运行中报错:…` | 脚本抛错,或引擎 `console.error`(`[CanvasRenderer] 对象绘制抛错…`、`[Scene] updater 抛错,已移除`、`[Scene] 动画插值抛错,已终止该时间线`) |
 | `…Create 需要支持描边生长的对象:对象本身(Annotation)不支持`(或 `Cube`…、「其中的子元素」) | `Create` 用在 `Annotation`、3D 网格、空 `Group` / `Layout`、少于 2 点的 `Polygon` 上 → 改 `FadeIn` |
 | `…Transform:目标对象不在场景里 —— 两个都要先 scene.add…`(或「源对象」) | 两个都 `scene.add`,目标先藏 |
+| `分段运行中报错:图片「/img/a.png」还没有预加载…`(或 `SVG「…」`、`还在加载`、`是按 SVG 插画预加载的`) | 字符串构造前没在影片模块顶层 `await` 预加载 / 漏了 `await` / 种类不符 → 按 [6.12](#612-图片与-svg-插画) 改成句柄写法 `const X = await loadImage(…)` |
+| `/src/film/content.test.ts › <加载模块>` + `图片「…」取不到:HTTP 404(文件应放在 public/…;node 里找不到 …)` | 影片模块顶层的预加载失败 → 把文件放到括号里的位置,或改地址 |
 | `字幕区间非法:…` / `字幕重叠或乱序:…` / `字幕「…」在 E 秒结束,晚于分段结束(X 秒)` | `[start, end)` 递增不重叠,末条 ≤ `duration` |
 | `卡片「名」需要 title 与 titleTex 二选一` | `cardSegment` 只给一个 |
 | `超时:10000ms 内没有结束(挂起的 Promise?)`(之后的用例不再执行) | `TEST_TIMEOUT=30000 node scripts/test.mjs content` |
 | 新影片不在结果里 / timedSegment 报时长不符 | `content.test.ts` 写死了影片清单,按 [5.7](#57-注册新片) 加;含 `timedSegment` 的按 [5.5](#55-timedsegment按台词对齐) 单独测(先 `prepareVoice`) |
 
-内容测试**不查** TeX 错误、重叠出框、提前露出、竖屏,只能 `?preview=` 逐段看。
+内容测试**不查** TeX 错误、重叠出框、提前露出、竖屏。版面另有 **`npm run layout:check -- <影片>`**(`<影片>` 是 `src/film/catalog.ts` 的键,先按 [5.7](#57-注册新片) 登记;
+还没登记的文件用 `node skills/film-authoring/scripts/check-film.mjs src/film/<片>.ts`,同一套检查,结果列在「版面」提醒里,`版面✗` 即错误级):
+在 node 里按播放器的口径(字幕安全区、字幕条、进度条)把每段干跑一遍,横屏 1280×720 与 9:16 405×720 各一遍,每 0.5 秒 + 段尾采样;
+有 `public/voice/<影片>/timing.json` 就按时间表排时长,否则 `timedSegment` 按草稿。报告按分段列出(导数长片的真实输出):
+
+```
+== 版面检查《derivatives》:35 段 × 2 种画幅(横屏 1280×720、竖屏 405×720),每 0.5 秒 + 段尾采样
+✗ 错误 1 · ! 提醒 6 · 信息 4 条(加 --all 显示)
+
+#6 导数定义(全片 80.6–95.8s)
+  ✗ [竖屏 405×720] 文字出画 5.5–15.17s:Tex「f'(x) = \lim_{h \to 0}\frac{f(x+h)-f(x)}{h}」出画 86.9 px(左边),只看得见 70%
+      世界位置 (0, 20);最严重在段内 11.5s → /?scene=derivatives&preview=92.1&aspect=w9h16
+      怎么修:取景没框住它:……
+```
+
+竖屏问题的 `?preview=` 地址带 `&aspect=w9h16`,打开就是竖屏;预览不画字幕和进度条(压字幕、压进度条的问题在预览里看不到遮挡物)。
+
+| 类别(报告原文) | 级别 | 怎么修 |
+| --- | --- | --- |
+| 文字出画 | 出画 ≥ 8 px 或只看得见 < 90% 为 ✗,否则 !;刻度数字一律 ! | 会变大 / 后出现 / 会移动的对象按最大包络进 `stage`(`fitExtra` 放终态);推近时邻近的字藏掉或一起框进来;竖屏写 `isNarrow` 分支或 `fitWidth` 收窄 |
+| 文字互压 | ✗;任一块不透明度 < 0.5 时 ! | `nextTo` / `arrange` 按外接盒摆([6.9](#69-容器与排版)),或错开出现时间、先 `FadeOut` 再 `FadeIn` |
+| 压住刻度 | ! | 离刻度数字至少一个字高(约 20 世界单位),或挪进坐标框的空白处 |
+| 被字幕盖住 / 被进度条盖住 | 文字 ✗,刻度数字 !,线条 · | 对象进 `stage` 一起取景(取景避开字幕安全区);没字幕的段没有安全区,至少写一条字幕 |
+| 字太小 | !:文字 < 12 px、刻度数字 < 6 px(屏幕 css 像素) | 竖屏把并排改成上下排,或换竖的取景框([8.4](#84-取景)) |
+| 字幕超出安全区 | ! | 字幕折成了多行:缩到一行(横屏约 51 字、9:16 约 23 字) |
+| 整个在画外 / 线穿文字 | ·(信息级,缺省不列) | 不用的藏掉 / 读数挪到线的另一侧 |
+
+- 运镜途中、淡入淡出(或描边生长)时采到的问题降为 ·;扫动中只采到一次的也降为 ·;运镜持续 1 秒以上的最多算 !。同一个问题连续几次采样合并成一条时间段。
+- 选项:`--segment <序号或分段名>`(可重复)、`--viewports 1280x720,405x720`、`--interval 0.5`、`--all`(连 · 一起列)、`--strokes`(另查线穿文字,结果是 ·,要配 `--all` 才列出)、`--json <文件>`(完整报告)、`--scene <场景键>`(地址里的 `?scene=`,缺省按片名猜,`voice-demo` → `voicedemo`)、`--base <地址前缀>`、`--no-fail`。
+- 退出码:0 没有 ✗;1 有 ✗,或有分段没查成(起播抛错、播放出错,列在「没查成的分段」里);2 用法错误。`--no-fail` 时 1 也返回 0。
+- node 里没有真实字体:`Label` 按「中文 1em、其余 0.6em」估宽,取景和检查用同一套;浏览器里的实际宽度会略有出入。TeX 红字、提前露出仍要 `?preview=` 逐段看。
+- 程序里用 `checkFilmLayout(segments, { env })` / `formatLayoutReport(report)`(`src/film/layoutCheck.ts`,不经 `./film` 转出;node 里 `env` 照 `scripts/layout-check.mjs` 传桩画布,含 `timedSegment` 的先 `prepareVoice`);自建场景查当前一帧用引擎的 `findSceneLayoutIssues(scene, { zones? })`。
 
 ### 12.2 画面不对(预览、播放时)
 
@@ -4675,17 +5166,32 @@ handle.audio;                     // { status, codec?, reason?, note?, failed? }
 | 背景有淡方格和十字 | `env.scene.setTheme({ ...lightTheme, showGrid: false, showAxes: false })` |
 | 章名显示成「一 · 第一章」 | `chapter` 只写短标题,编号自动加 |
 | `[Tex] 公式内容 1 秒内变了 N 次…` | 逐帧变的读数改用 `Label`,固定小数位 |
+| `[svg] 「…」里有不支持的内容,已忽略:<text>×2(…)、filter 属性×1…`;插画缺字、缺阴影、渐变变成单色 | 那部分被忽略了(清单见 [6.12](#612-图片与-svg-插画))→ 文字用 `Label` / `Tex` 叠上去,滤镜、裁剪在设计工具里拼合成路径再导出 |
+| 插画 `setStyle({ fill })` / `setStyle({ stroke })` 没反应 | SVG 里写明的颜色锁在部件上 → `ColorTo(illo, …)` 或 `ColorTo(illo.part(id), …)`;`currentColor` / 没写 fill 的部件改 `textColor` |
+| `ColorTo` / `Indicate` 染不了图片 | 位图不着色 → 用 `Circumscribe` / `Flash` 指出来 |
+| 手写的线稿(只写了 `stroke`)被填成深色块 | 没写 `fill` 的形状按墨色填充(SVG 缺省也填,只是纯黑)→ 线稿写 `fill="none"` |
 | `Scene.fitObjects: 包围盒含非有限值,已忽略` | 坐标算出了 NaN |
 | `[film] 分段「x」启动失败` / `播放出错` | 这段被跳过 → 跑内容测试看完整报错 |
+| 故事板缩略图下标 `脚本 Xs 就结束了(声明 Ds)` | 时间线比 `duration` 短,成片里这段提前切走、进度条往前跳 → 补 `env.wait`,或把 `duration` 连同时长账、字幕一起改短 |
+| 故事板标 `脚本超过声明的 Ds(到 Xs 还没结束)` | 时间线比 `duration` 长,超出的动作在成片里被切掉 → 加长 `duration` 或删停顿;准确的实际时长看内容测试 |
+| 故事板标 `白场 N%`,缩略图发白 | 这一刻在段首 0.6 秒的淡入里,成片也这么白 → 关键镜头挪到 t ≥ 0.6;只看主画面就点进单帧预览 |
+| 故事板标 `出错:…`,或整段格子是灰的(`出错:分段启动失败:…`) | 脚本抛错 → 跑内容测试看完整报错 |
+| 故事板页头 `“x” 不是时刻(……),已忽略` | `storyboard=` 的时刻写 `12.5`、`12.5s` 或 `1:05.5`(秒 < 60),不能写负数、`1e3`;语法见 [5.9](#59-预览跳转安全区竖屏重建背景网格与-settheme) |
+| 想看第 N 秒,故事板却出了 N 张(页头 `按 N 帧均匀取;…`) | 单独一个纯整数是张数 → 写 `Ns`、`m:ss` 或 `N,` |
+| 故事板缩略图和成片比例不同 | 按工具条当前画幅排版,缺省 `全屏` 是窗口比例 → 先点 `16:9`(或地址加 `&aspect=w16h9`) |
+| 3D 线条、字母和立体对不上;控制台「不共用同一个 Projection3D」「不在同一个画框」「不在空间原点」 | 3D 对象各以自己的原点为灭点 → 都放进同一个 `Space3D`、都留在原点,挪就挪空间([9.6](#96-3d-里的标注辅助线与坐标轴)) |
+| 3D 线条的可见部分被立体盖住 / 身后的线没变虚线 | 线比网格先加 → 放进 `Space3D` 或网格先加;不填色的开放曲面不挡线 → 给曲面 `fill` |
+| 3D 曲线或字母不见;控制台「采样函数在整个 tRange 上都没有有限值」「锚点坐标不是有限数」 | 坐标算出了 NaN / Infinity → 检查函数和区间 |
 
 ### 12.3 竖屏(9:16)
 
-点 `9:16` 再用 `?preview=秒` 逐段看(测试和配音工具只跑横屏)。
+点 `9:16` 再用 `?preview=秒` 逐段看(内容测试和配音工具只跑横屏;`npm run layout:check` 会连 9:16(405×720)一起查出画、互压、字太小,竖屏问题的地址带 `&aspect=w9h16`,见 [12.1](#121-内容测试-node-scriptstestmjs-content))。
 
 | 症状 | 原因 → 怎么修 |
 | --- | --- |
 | 并排的图和公式挤成一小条 | 没写竖屏分支 → `isNarrow(env.scene)` 分两套坐标:图在上(如 `{ x: 0, y: -170 }`),公式在下(`sideColumn` 竖屏首行 y 60、行距 70) |
-| 有对象出画 | 按最大包络取景(`stage` 第 4 参数 `fitExtra`) |
+| 有对象出画(版面检查:`[竖屏 405×720] 文字出画`) | 按最大包络取景(`stage` 第 4 参数 `fitExtra`);换过内容的长公式按最长的样子取景,或 `fitWidth(m, 宽)` 收窄 |
+| 版面检查:`[竖屏 405×720] 字太小` | 横向的取景框在 9:16 里 zoom 只有约 0.7:`isNarrow` 分支改上下排,或换竖的取景框([8.4](#84-取景)) |
 | 切 9:16 或转屏时当前段从头播 | 预期行为(重建当前段) |
 | 节奏和横屏不一样 | 竖屏分支只改布局,不改时间线 |
 
@@ -4700,6 +5206,7 @@ handle.audio;                     // { status, codec?, reason?, note?, failed? }
 | 固定时长段的声音在段尾被截断 | 压缩配音,或加长 `duration` 并重新导出台词稿 |
 | 红条「场景加载失败:timedSegment「…」…」 | 构造校验失败 → 按文案补 id、去重、去空台词 |
 | `[film] timedSegment「…」没有经过 prepareVoice…` | 绕过了 `filmEntry`,或测试没先 `prepareVoice` |
+| `[film] timedSegment「…」playUntil(台词「x」说完):…`(或 `playThrough(…)`) | 离目标剩的时间不够动画的 `min`(+ `lead`),或目标已经过了:动画按 `min` 播,比目标晚收住 → 调小 `min` / `lead`(动画别自带长 runTime)、换个更晚的目标,或让台词留出时间;有配音时 `voice:check` 给具体数字 |
 | `没有名为「x」的影片;可选:…` | `FILM_CATALOG` 加一行,键 = voiceId |
 | `voice:check` 说音频不存在,文件明明在 | 路径以 `/` 开头,或校验的不是最终目录的 timing.json |
 
@@ -4710,8 +5217,9 @@ handle.audio;                     // { status, codec?, reason?, note?, failed? }
 | 症状 | 原因 → 怎么修 |
 | --- | --- |
 | 成片比例不对 | 停在「全屏」或别的画幅 → 先点 `16:9` |
+| 红条 `导出中断:导出画布被跨源内容污染…`(`tainted`)/ 离线导出 `视频编码失败:…`(页面上有自己画的跨源图时) | 有跨源图像绕过 `loadImage` 画上了画布(自己写的 `drawImage`)→ 改用 `loadImage` + `Picture`,或把文件放进 `public/`([11.4](#114-离线逐帧-vs-实时录制)) |
 | 不想要字幕或进度条 | 进度条:`startExport` 里给 `exportVideo({ mimeType, onProgress })` 加 `progress: false`;字幕:`filmEntry` 里写 `runFilm(canvas, segments, { onPausedChange: hooks.onPausedChange, subtitles: false })`(播放时也没有)。别绕过 `filmEntry`(会跳过 `prepareVoice`) |
-| 没有「导出」按钮 | 演示场景(`kind: 'scene'`)、地址带 `?preview=`,或浏览器 MP4、WebM 都导不了 |
+| 没有「导出」按钮 | 演示场景(`kind: 'scene'`)、地址带 `?preview=` 或 `&storyboard`,或浏览器 MP4、WebM 都导不了 |
 | 导出很慢,片子从头实时播 | 改走了实时录制 → 保持前台等它播完 |
 
 ### 12.6 测试、类型检查、lint、加载
@@ -4720,6 +5228,9 @@ handle.audio;                     // { status, codec?, reason?, note?, failed? }
 | --- | --- |
 | `期望 film,derivatives,topology,voice-demo,实际 …` | `voiceDemo.test.ts` 写死了影片目录 → 加上新片名([5.7](#57-注册新片)) |
 | 红条「场景加载失败:…」 | 内容模块 import 时抛错 → 按文案修 |
+| 红条「场景加载失败:图片「/img/a.png」取不到:HTTP 404(文件应放在 public/img/a.png…)」(或 `SVG「…」`) | 顶层预加载的文件不在;括号里带「服务器返回的是网页 index.html」的是开发服务器拿首页顶替了不存在的文件 → 把文件放到 `public/` 下对应位置(或改地址),**刷新页面** |
+| 红条「场景加载失败:…网络错误,或对方服务器没开 CORS…」 | 远程图片没开 CORS → 下载进 `public/`,或让对方加 `Access-Control-Allow-Origin` |
+| 红条「场景加载失败:SVG「…」解析失败:…」/「…解码失败(格式不支持或文件损坏)」/「有 N 个资源没能加载:…」 | SVG 语法错或根不是 `<svg>` / 图片坏了 / `preloadAssets` 多项失败,逐条看 → 按 [6.12](#612-图片与-svg-插画) 的 `AssetError` 表修 |
 | `error TS6133: 'x' is declared but its value is never read.` / `TS6192` | 删掉没用的 import / 变量 |
 | `error TS1484: 'X' is a type and must be imported using a type-only import…` | `import type { X }`,值和类型分两行 |
 | `error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.` | 别用 `enum`、`namespace`、构造函数参数属性 |
@@ -4806,6 +5317,8 @@ npm test                 # src 下全部 *.test.ts(x)
 node scripts/test.mjs content                     # 只跑路径含关键字的测试文件
 TEST_TIMEOUT=30000 node scripts/test.mjs content  # 单条用例超时 30 秒(缺省 10)
 npm run check            # typecheck + lint + test + test:runner,提交前跑
+npm run layout:check -- derivatives   # 版面检查:横屏 + 9:16 的出画、互压、压刻度、压字幕(见 12.1)
+node skills/film-authoring/scripts/check-film.mjs README.md   # 核验 README 里所有完整示例(类型、lint、干跑时长、字幕、版面)
 npm run build            # 生产构建到 dist/
 npm run bench            # 性能基线比对(--save 存基线;--strict 慢 25% 以上退出码 2)
 ```
@@ -4816,15 +5329,26 @@ npm run bench            # 性能基线比对(--save 存基线;--strict 慢 25% 
 
 ```
 src/
-  App.tsx / main.tsx   # 宿主:画布、工具条、导出按钮
-  sceneRegistry.ts     # SCENES 注册表(filmEntry:加载 → prepareVoice → runFilm)
+  App.tsx / main.tsx   # 宿主:画布、工具条、导出按钮、单帧预览与故事板页(?preview= / &storyboard)
+  sceneRegistry.ts     # SCENES 注册表(filmEntry:加载 → prepareVoice → runFilm;故事板入口)
   engine/              # 引擎,不依赖 React;index.ts 是唯一出口
+    mobjects/          #   2D 图元;picture.ts 位图 Picture,illustration.ts SVG 插图 Illustration / SvgGroup / SvgPart
+    mobjects3d/        #   3D 网格、曲面、Projection3D;3D 线条 lines3d.ts(Line3D、Arrow3D、Polyline3D、ParametricCurve3D,基类 Stroke3D)、
+                       #   Axes3D、Anchor3D / Dot3D(贴在 3D 点上的 2D 标注)、Space3D、occlusion.ts(线被网格遮挡)
+    animations/        #   动画;animations3d.ts 有 Orbit3D、Spin3D、ViewTo、ParamMorph
+    assets/            #   图片 / SVG 资源:加载器、模块级缓存注册表(预加载)、SVG 解析
+    layout/            #   Layout 容器;arrange.ts 排版助手(nextTo、arrange、alignTo、fitWidth、keepInside…);
+                       #   版面检查 inspect.ts(截获一帧的屏幕盒)、issues.ts(出画 / 互压 / 压遮挡区 / 字太小规则)、textMetrics.ts(node 里估字宽)
+    path/              #   路径几何;pace.ts 是 Create / Write 的笔速
   audio/               # 声音层:混音、解码、实时播放
-  film/                # 播放器与内容;film.ts 是对外出口,helpers.ts 是助手,catalog.ts 是影片目录(配音工具用)
+  film/                # 播放器与内容;film.ts 是对外出口,helpers.ts 是助手,catalog.ts 是影片目录(配音工具、版面检查用);
+                       #   timed.ts 按台词对齐的分段(playUntil / playThrough),voice*.ts 配音;
+                       #   storyboard.ts / storyboardRender.ts / storyboardView.ts 故事板;layoutCheck.ts 整片版面检查(采样、合并、报告)
   export/              # 导出:录制、合成、离线编码、错误模型
   scenes/              # 单场景 demo 与场景句柄契约
   testing/             # 测试壳与桩
-scripts/               # 测试运行器、依赖环检查、bench、配音工具
+scripts/               # 测试运行器、依赖环检查、bench、配音工具(voice.mjs、voice-demo-say.mjs)、版面检查 layout-check.mjs
+skills/film-authoring/ # 写片 skill:SKILL.md、references/、scripts/check-film.mjs(核验影片文件或 README 示例)
 public/voice/<voiceId>/  # timing.json 与音频
 ```
 

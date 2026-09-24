@@ -42,9 +42,9 @@
 
 **4.10 十分钟完整一集**(8–10 分钟)——长片是拼出来的:片头 + 提要 + 5 ×(章节卡 + 现成的段 + 一道题)+ 小结 + 片尾。五章串成一条线,提要和章节卡小字说出这条线。易错:接续上一段末帧的段不能拆开;分段名(即缺省配音 id)不能重名;同名导出用 `as` 改名。
 
-**4.11 配音驱动短片**——`timedSegment`:台词带稳定 id,要对齐的词前插 `<mark name="k"/>`;脚本用 `untilLine` / `untilMark` 踩点,`runTime: Math.max(下限, env.remaining(id))` 兜底;末尾自己 `await env.wait(3)`。流程:`voice:script` → 配音方交音频 + measured.json → `voice:layout` → 放进 `public/voice/<voiceId>/` → `voice:check`(README §10)。
+**4.11 配音驱动短片**——`timedSegment`:台词带稳定 id,要对齐的词前插 `<mark name="k"/>`;脚本用 `untilLine` / `untilMark` 踩点,跟着台词伸缩的动画用 `playUntil({ end: id } / { line: id, mark: 'k' }, 动画)` / `playThrough(id, 动画)` 写「在哪儿收住」(不拿 `remaining` 算时长);末尾自己 `await env.wait(3)`。流程:`voice:script` → 配音方交音频 + measured.json → `voice:layout` → 放进 `public/voice/<voiceId>/` → `voice:check`(README §10)。
 
-**4.12 3D 直观片**——`Projection3D({ rotX: -0.45, rotY: 0.6 })` 让几个网格共用视角,`Orbit3D(view, 圈数, { runTime })` 整组转;立体 `Cube` / `Cylinder` / `Cone` / `Sphere` / `Pyramid`…,曲面 `ParametricSurface`(`resample([参数])` 变形)。网格一律 `FadeIn`(不能 `Create`);网格之间不遮挡;圆的立体转起来看不出变化,转方的。
+**4.12 3D 直观片**——`Projection3D({ rotX: -0.45, rotY: 0.6 })` 让几个网格共用视角,`Orbit3D(view, 圈数, { runTime })` 整组转;立体 `Cube` / `Cylinder` / `Cone` / `Sphere` / `Pyramid`…,曲面 `ParametricSurface`(`resample([参数])` 变形)。网格一律 `FadeIn`(不能 `Create`);网格之间不遮挡;圆的立体转起来看不出变化,转方的。要坐标轴、空间曲线、顶点字母:`Axes3D` / `Line3D` / `ParametricCurve3D` / `Anchor3D` 和网格放进同一个 `Space3D`(README 9.6,完整例子《圆柱螺旋线》),线条能 `Create`,被挡住的部分自动画虚线;俯仰、换方位用 `ViewTo`。
 
 ## 镜头套路(README 4.13 有完整表)
 
@@ -63,8 +63,8 @@
 | 迭代构造(牛顿法) | 每步 `Create(切线, 1.5)` + `FadeIn(垂线、落点, 1)`,停 1 | 19–20 |
 | 习题 | `quizSegment` | 17.9 |
 | 集合 / 映射示意图 | `Ellipse` / `Circle` / `Arrow` 用 `Create` 1–1.2,关注的集合填 `#dbeafe` | 9–10.5 |
-| 按台词踩点 | `timedSegment` + `untilLine` / `untilMark` / `remaining` | 每句 3–6 |
+| 按台词踩点 | `timedSegment` + `untilLine` / `untilMark` / `playUntil` / `playThrough` | 每句 3–6 |
 | 高亮圈注 | `Indicate` / `Circumscribe`(`{ part }` 配 `\class{名}{…}`);持久变色 `ColorTo` | 各约 1 |
 | 黎曼和加细 | `RiemannTo`(1.2,之后停 1–1.5) | — |
 | 运镜 | `scene.playFit(对象[], { runTime: 2 })` 与 `env.play(Create…)` 放进同一个 `Promise.all`,之后 `env.checkpoint()` | 2–2.2 |
-| 3D 旋转展示 | `Orbit3D` / `ParamMorph`(俯仰用 README 9.5 的自定义 `TiltTo`) | 2.4 / 4 |
+| 3D 旋转展示 | `Orbit3D` / `ParamMorph`;俯仰、换方位用 `ViewTo`(约 3) | 2.4 / 4 |
