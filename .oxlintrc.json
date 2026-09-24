@@ -96,7 +96,7 @@
       }
     },
     {
-      "files": ["scripts/**"],
+      "files": ["scripts/**", "skills/**/scripts/**"],
       "rules": {
         "no-console": "off"
       }
