@@ -48,7 +48,11 @@ function filmEntry(
   title: string,
   voiceId: string,
   loadContent: () => Promise<readonly Segment[]>,
-): SceneEntry & { readonly kind: 'film'; readonly preview: NonNullable<SceneEntry['preview']> } {
+): SceneEntry & {
+  readonly kind: 'film';
+  readonly preview: NonNullable<SceneEntry['preview']>;
+  readonly storyboard: NonNullable<SceneEntry['storyboard']>;
+} {
   const prepared = once(async (): Promise<readonly Segment[]> => {
     const [{ prepareVoice }, segments] = await Promise.all([import('./film/film'), loadContent()]);
     return (await prepareVoice(segments, { sheetUrl: voiceSheetUrl(voiceId) })).segments;
@@ -63,6 +67,7 @@ function filmEntry(
         fromFilm(runFilm(canvas, segments, { onPausedChange: hooks.onPausedChange }));
     },
     preview: filmPreview(prepared),
+    storyboard: filmStoryboard(prepared),
   };
 }
 
@@ -130,6 +135,70 @@ export function resolvePreviewSeconds(search: string): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
+/** 工具条上的画幅(同时是 App 里 <main> 的 CSS 类名)。第一个是缺省。 */
+export const ASPECT_IDS = ['full', 'w16h9', 'w4h3', 'w9h16'] as const;
+export type AspectMode = (typeof ASPECT_IDS)[number];
+
+/**
+ * &aspect= → 画幅;没有或认不出按 'full'。
+ * 画幅写在地址里:刷新、从单帧预览返回故事板都还是这个画幅,
+ * 故事板缩略图点进去的 ?preview= 也带着它(竖屏排版的问题在竖屏里看)。
+ */
+export function resolveAspect(search: string): AspectMode {
+  const raw = new URLSearchParams(search).get('aspect');
+  return ASPECT_IDS.find((id) => id === raw) ?? 'full';
+}
+
+/** 把画幅写进查询串('full' 是缺省,删掉参数),其余参数原样保留。有参数时带前导 '?',一个都没有时为空串。 */
+export function aspectSearch(search: string, aspect: AspectMode): string {
+  const params = new URLSearchParams(search);
+  if (aspect === 'full') {
+    params.delete('aspect');
+  } else {
+    params.set('aspect', aspect);
+  }
+  const text = params.toString();
+  return text === '' ? '' : `?${text}`;
+}
+
+/**
+ * &storyboard= 的原文:有这个参数(值可以为空)就进故事板模式,没有返回 null。
+ * 语法由影片层解析(film/storyboard.ts 的 parseStoryboardSpec);写错了在故事板页头提示,不回落正常播放。
+ */
+export function resolveStoryboardParam(search: string): string | null {
+  const params = new URLSearchParams(search);
+  return params.has('storyboard') ? (params.get('storyboard') ?? '') : null;
+}
+
+/**
+ * 点缩略图跳去的单帧预览查询串:去掉 storyboard、写上 preview,其余参数(scene、aspect……)原样保留。返回值带前导 '?'。
+ * 秒数由故事板挑好(能还原到同一帧的最短小数),这里只去掉浮点尾巴(最多 6 位小数);非有限 / 负数按 0。
+ */
+export function previewSearch(search: string, seconds: number): string {
+  const params = new URLSearchParams(search);
+  params.delete('storyboard');
+  const s = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1e6) / 1e6 : 0;
+  params.set('preview', String(s));
+  return `?${params.toString()}`;
+}
+
+/**
+ * 影片条目的故事板挂载:懒加载视图模块,用 filmEntry 同一份准备好的分段(时间轴与播放、预览一致)。
+ * 这里不 import 故事板的任何值,主包不多带东西。
+ */
+function filmStoryboard(
+  loadContent: () => Promise<readonly Segment[]>,
+): NonNullable<SceneEntry['storyboard']> {
+  return async (param, host) => {
+    const [{ mountStoryboard }, segments] = await Promise.all([
+      import('./film/storyboardView'),
+      loadContent(),
+    ]);
+    const view = mountStoryboard({ ...host, segments, spec: param });
+    return { dispose: () => view.dispose(), resize: () => view.resize() };
+  };
+}
+
 /**
  * 影片条目的静态预览挂载:目标帧画一次,不播放。
  * resize 防抖重画同一帧;重叠的两轮画的是同一帧,谁后画完都一样,不用互斥。
@@ -195,14 +264,14 @@ export function supportedFormats(
   return formats.length > 0 ? ['auto', ...formats] : [];
 }
 
-/** 下载文件名:场景 + 画幅 + 本地时间戳,扩展名跟随实际编码出来的格式。 */
+/** 下载文件名:场景 + 画幅 + 本地时间戳,扩展名跟随实际编码出来的格式(视频,或故事板联系表的 PNG)。 */
 export function downloadName(
   sceneId: SceneId,
   aspect: string,
   mimeType: string,
   now: Date = new Date(),
 ): string {
-  const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+  const ext = mimeType.includes('png') ? 'png' : mimeType.includes('mp4') ? 'mp4' : 'webm';
   const pad = (n: number): string => String(n).padStart(2, '0');
   const stamp =
     `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-` +

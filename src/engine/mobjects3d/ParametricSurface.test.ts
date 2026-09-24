@@ -1,4 +1,4 @@
-import { equal, ok, suite, throws } from '../../testing/harness';
+import { close, equal, ok, suite, throws } from '../../testing/harness';
 import { lightTheme } from '../theme/presets';
 import { recordingCtx } from './drawRecorder.testutil';
 import type { Vec3 } from './Mesh3D';
@@ -322,6 +322,37 @@ export default suite('ParametricSurface', [
       throws(() => new ParametricSurface(torusParam(10, 3), { uRange: [0, NaN] }));
       throws(() => new ParametricSurface((u) => ({ x: Math.log(u), y: 0, z: 0 }), { uRange: [0, 1] }));
       throws(() => new ParametricSurface((u) => ({ x: u, y: 1 / u, z: 0 }), { uRange: [0, 1] }));
+    },
+  ],
+  [
+    'pointAt(u, v) 按当前参数采样一点(与网格顶点一致);非有限返回 NaN 坐标',
+    () => {
+      const fn: ParamFn = (u, v, params) => ({ x: u * 10, y: v * 10 * (1 + (params[0] ?? 0)), z: u * v });
+      const s = new ParametricSurface(fn, { uRange: [0, 1], vRange: [0, 1], uSegs: 2, vSegs: 2, params: [0] });
+      const corner = s.pointAt(1, 1);
+      const vertex = s.vertices[8];
+      equal(corner.x, vertex?.x);
+      equal(corner.y, vertex?.y);
+      equal(corner.z, vertex?.z);
+      s.resample([1]);
+      equal(s.pointAt(0, 1).y, 20);
+      const holes = new ParametricSurface(
+        (u, v) => ({ x: u, y: v, z: u > 0.9 ? Math.sqrt(-1) : 0 }),
+        { uRange: [0, 0.5], vRange: [0, 1] },
+      );
+      ok(Number.isNaN(holes.pointAt(1, 0).z));
+      ok(Number.isNaN(holes.pointAt(1, 0).x), '非有限时三个分量都是 NaN');
+      // 可去奇点与网格顶点同一规则:挪一点重取,网格在那里连续,曲面上的曲线也连续。
+      const sinc = new ParametricSurface(
+        (u, v) => {
+          const r = Math.hypot(u, v);
+          return { x: u, y: v, z: Math.sin(r) / r };
+        },
+        { uRange: [-1, 1], vRange: [-1, 1], uSegs: 2, vSegs: 2 },
+      );
+      const top = sinc.pointAt(0, 0);
+      close(top.z, 1, 1e-6);
+      close(top.z, sinc.vertices[4]?.z ?? NaN, 1e-6);
     },
   ],
 ]);

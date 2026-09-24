@@ -55,6 +55,89 @@ export class Orbit3D extends BasePlayable {
   }
 }
 
+/** ViewTo 的目标视角:给了哪几个就动哪几个。azimuth / elevation 是数学视角(见 Projection3D.math)。 */
+export interface ViewTarget {
+  rotX?: number;
+  rotY?: number;
+  azimuth?: number;
+  elevation?: number;
+  viewDistance?: number;
+}
+
+/**
+ * ViewTo:把一套共享视角补间到目标(俯仰、环绕到指定方位、推近拉远)。
+ * 给了哪几个键就动哪几个;azimuth / elevation 在构造时换算成 rotY / rotX
+ * (rotY = −azimuth − π/2,rotX = −elevation)。共用这个视角的网格、线条、标注一起动。
+ *
+ * azimuth 是**方位**,取最短路径:播放开始时把目标换成与当前 rotY 相差不超过 π 的等价角。
+ * Orbit3D 转过整圈后 rotY 已经累加了 2π 的倍数,「回到课本视角」不该倒着再转几圈。
+ * 这一点故意与 RotateTo 不同(相机方位是周期的,物体转角不是)。
+ * rotY / rotX / elevation 照字面线性补间:要整圈环绕就直接给 rotY(或用 Orbit3D)。
+ */
+export class ViewTo extends BasePlayable {
+  private readonly projection: Projection3D;
+  private readonly toRotX: number | undefined;
+  /** 字面目标 rotY(azimuth 已换算);azimuth 目标在 begin 里再换成最近的等价角。 */
+  private readonly targetRotY: number | undefined;
+  private readonly shortestRotY: boolean;
+  private readonly toDistance: number | undefined;
+  private toRotY: number | undefined;
+  private fromRotX = 0;
+  private fromRotY = 0;
+  private fromDistance = 0;
+
+  constructor(projection: Projection3D, target: ViewTarget, options?: AnimationOptions) {
+    super(options);
+    const { rotX, rotY, azimuth, elevation, viewDistance } = target;
+    const given = [rotX, rotY, azimuth, elevation, viewDistance].filter((v) => v !== undefined);
+    if (given.length === 0) {
+      throw new Error('ViewTo 至少要给 rotX / rotY / azimuth / elevation / viewDistance 中的一个');
+    }
+    if (rotY !== undefined && azimuth !== undefined) {
+      throw new Error('ViewTo 不能同时给 rotY 和 azimuth(它们是同一个角的两种说法)');
+    }
+    if (rotX !== undefined && elevation !== undefined) {
+      throw new Error('ViewTo 不能同时给 rotX 和 elevation(它们是同一个角的两种说法)');
+    }
+    if (given.some((v) => !Number.isFinite(v))) {
+      throw new Error(`ViewTo 的目标需要有限数,收到 ${JSON.stringify(target)}`);
+    }
+    this.projection = projection;
+    this.toRotX = elevation !== undefined ? 0 - elevation : rotX;
+    this.targetRotY = azimuth !== undefined ? 0 - azimuth - Math.PI / 2 : rotY;
+    this.shortestRotY = azimuth !== undefined;
+    this.toRotY = this.targetRotY;
+    this.toDistance = viewDistance;
+  }
+
+  override begin(): void {
+    this.fromRotX = this.projection.rotX;
+    this.fromRotY = this.projection.rotY;
+    this.fromDistance = this.projection.viewDistance;
+    const target = this.targetRotY;
+    if (target !== undefined && this.shortestRotY) {
+      // 目标换成与起点相差在 [−π, π] 内的等价角(差 2π 的整数倍,画面相同)。
+      const turn = Math.PI * 2;
+      const delta = target - this.fromRotY;
+      this.toRotY = this.fromRotY + (delta - turn * Math.round(delta / turn));
+    } else {
+      this.toRotY = target;
+    }
+  }
+
+  interpolate(alpha: number): void {
+    if (this.toRotX !== undefined) {
+      this.projection.rotX = lerp(this.fromRotX, this.toRotX, alpha);
+    }
+    if (this.toRotY !== undefined) {
+      this.projection.rotY = lerp(this.fromRotY, this.toRotY, alpha);
+    }
+    if (this.toDistance !== undefined) {
+      this.projection.viewDistance = lerp(this.fromDistance, this.toDistance, alpha);
+    }
+  }
+}
+
 /** MorphTo:同拓扑网格的顶点形变,目标顶点数必须与网格一致。 */
 export class MorphTo extends Animation {
   private start: Vec3[] = [];

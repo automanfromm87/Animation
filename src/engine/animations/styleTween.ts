@@ -11,8 +11,9 @@ import { Animation } from './Animation';
 /** ColorTo 的目标样式。没写的键保持不变。 */
 export interface ColorTarget {
   /**
-   * 简写:描边、文字色都变成它;原本有填充的叶子,填充也变成它(保留原填充的透明度),
+   * 简写:描边、文字色都变成它;原本有填充的叶子,填充也变成它,
    * 原本不填充的仍不填充 —— 给整组换色时,线条、坐标轴不会突然被填满。
+   * 描边与填充各自保留原来的透明度(半透明的网格线、SVG 插画里半透明的阴影换色后仍是半透明)。
    * 与下面的具体键同时给时,具体键优先。
    */
   color?: string;
@@ -59,9 +60,10 @@ function leavesOf(root: MObject, context: PlayContext | undefined): Array<[MObje
 /** 按叶子当前的样式算出它的终态(只含要改的键)。 */
 function targetFor(target: Readonly<ColorTarget>, from: ResolvedStyle): StyleOverride {
   const to: StyleOverride = {};
-  const stroke = target.stroke ?? target.color;
-  if (stroke !== undefined) {
-    to.stroke = stroke;
+  if (target.stroke !== undefined) {
+    to.stroke = target.stroke;
+  } else if (target.color !== undefined) {
+    to.stroke = fadeColor(target.color, colorAlpha(from.stroke));
   }
   const text = target.textColor ?? target.color;
   if (text !== undefined) {

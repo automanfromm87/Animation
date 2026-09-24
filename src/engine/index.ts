@@ -107,6 +107,62 @@ export type {
   LayoutOptions,
 } from './layout/Layout';
 export { Layout } from './layout/Layout';
+// 排版助手(按视觉外接盒 nextTo / arrange / fitWidth……)与版面检查(出画、文字互压、压遮挡区、字太小)。
+export type {
+  AlignEdge,
+  ArrangeOptions,
+  CrossAlign,
+  LayoutTarget,
+  NextToOptions,
+  Side,
+  VisibleBoundsOptions,
+} from './layout/arrange';
+export {
+  alignTo,
+  arrange,
+  boundsOf,
+  centerAt,
+  fitWidth,
+  fitWithin,
+  keepInside,
+  nextTo,
+  visibleWorldBounds,
+} from './layout/arrange';
+export {
+  estimateTextWidth,
+  estimatedTextMetricsInstalled,
+  installEstimatedTextMetrics,
+} from './layout/textMetrics';
+export type {
+  CaptureOptions,
+  InspectOptions,
+  LayoutFrame,
+  LayoutItem,
+  LayoutItemKind,
+  LayoutTransform,
+  RenderSnapshot,
+} from './layout/inspect';
+export {
+  captureRender,
+  describeObject,
+  inspectScene,
+  inspectSnapshot,
+  layoutObjectId,
+} from './layout/inspect';
+export type {
+  LayoutCheckOptions,
+  LayoutIssue,
+  LayoutIssueKind,
+  LayoutMotion,
+  LayoutSeverity,
+  LayoutZone,
+} from './layout/issues';
+export {
+  findLayoutIssues,
+  findSceneLayoutIssues,
+  maxSeverity,
+  severityRank,
+} from './layout/issues';
 
 export type { RateFunction } from './animations/rateFunctions';
 export {
@@ -139,7 +195,8 @@ export {
   RotateTo,
   ScaleTo,
 } from './animations/primitives';
-export { MorphTo, Orbit3D, ParamMorph, Spin3D } from './animations/animations3d';
+export type { ViewTarget } from './animations/animations3d';
+export { MorphTo, Orbit3D, ParamMorph, Spin3D, ViewTo } from './animations/animations3d';
 export type { TransformOptions } from './animations/transform';
 export { Transform } from './animations/transform';
 export type { TransformMatchingTexOptions } from './animations/transformMatching';
@@ -165,9 +222,27 @@ export type { ColorTarget } from './animations/styleTween';
 export { ColorTo } from './animations/styleTween';
 export { TweenValue, ValueTracker } from './animations/tracker';
 
+export type { ProjectedPoint, ProjectionFrame } from './mobjects3d/Projection3D';
 export { Projection3D } from './mobjects3d/Projection3D';
-export type { Mesh3DOptions, Resamplable, Vec3 } from './mobjects3d/Mesh3D';
+export type { Vec3 } from './mobjects3d/vec3';
+export { mathPoint } from './mobjects3d/vec3';
+export type { Mesh3DOptions, Resamplable } from './mobjects3d/Mesh3D';
 export { Mesh3D } from './mobjects3d/Mesh3D';
+// 3D 线条、坐标轴与标注:和网格共用 Projection3D,视角一变一起动;被网格挡住的部分按 hidden 画。
+export type { HiddenStyle3D, Occlusion3DOptions } from './mobjects3d/occlusion';
+export type { Stroke3DOptions, Tips3D } from './mobjects3d/Stroke3D';
+export { Stroke3D } from './mobjects3d/Stroke3D';
+export type {
+  Curve3DFn,
+  ParametricCurve3DOptions,
+  Polyline3DOptions,
+} from './mobjects3d/lines3d';
+export { Arrow3D, Line3D, ParametricCurve3D, Polyline3D } from './mobjects3d/lines3d';
+export type { Anchor3DOptions, Dot3DOptions } from './mobjects3d/Anchor3D';
+export { Anchor3D, Dot3D } from './mobjects3d/Anchor3D';
+export type { Axes3DOptions, Axis3DRange } from './mobjects3d/Axes3D';
+export { Axes3D } from './mobjects3d/Axes3D';
+export { Space3D } from './mobjects3d/Space3D';
 export type { RevolvedOptions, SphereOptions } from './mobjects3d/solids';
 export {
   Cone,
@@ -247,3 +322,38 @@ export type {
   UpdaterScene,
 } from './scene/types';
 export { Scene } from './scene/Scene';
+
+// 图片与 SVG 插画:资源在影片模块顶层预加载(await loadImage / loadSvg / preloadAssets),分段脚本里同步构造。
+export type { Asset, AssetKind, AssetOf, AssetRequest, ImageAsset, PreloadedAssets, SvgAsset } from './assets/registry';
+export {
+  assetKindOf,
+  createImageAsset,
+  getImage,
+  getSvg,
+  isAssetReady,
+  loadImage,
+  loadSvg,
+  normalizeAssetSrc,
+  preloadAssets,
+  setAssetLoader,
+} from './assets/registry';
+export type { AssetErrorCode } from './assets/errors';
+export { AssetError, isAssetError } from './assets/errors';
+export type { AssetLoader, LoadedImage, NodeLoaderOptions, WebLoaderDeps } from './assets/loaders';
+export { nodeAssetLoader, webAssetLoader } from './assets/loaders';
+export type { SvgDocument, SvgGroupNode, SvgNode, SvgPaint, SvgShapeNode } from './assets/svgDocument';
+export type { PictureFit, PictureOptions } from './mobjects/picture';
+export { Picture } from './mobjects/picture';
+export type { IllustrationFit, IllustrationOptions, SvgElementObject } from './mobjects/illustration';
+export { Illustration, SvgGroup, SvgPart } from './mobjects/illustration';
+
+// 笔速:Create / Write 的 pace: 'curvature'(弯处放慢、直处加快,总时长不变);自定义生长动画也可以用。
+export type { CreateOptions } from './animations/primitives';
+export type { PaceOptions, PenPace, RevealPace } from './path/pace';
+export {
+  DEFAULT_PACE_STRENGTH,
+  MAX_PACE_STRENGTH,
+  pacedFraction,
+  resolvePace,
+  revealPartial,
+} from './path/pace';

@@ -1,6 +1,7 @@
 import { lerpColor } from '../color';
 import type { PathLayer } from './draw';
-import { partialPath } from './measure';
+import type { RevealPace } from './pace';
+import { revealPartial } from './pace';
 
 /**
  * 逐字书写(Write)与公式描边生长共用的节奏:每一片先按弧长描出轮廓、再淡入填充
@@ -31,9 +32,15 @@ export function staggered(alpha: number, index: number, count: number, lagRatio:
  * - 只描边的层:全程按弧长生长;
  * - 有填充的层:前半程按弧长描轮廓(有描边就用描边,没有就用填充色、outlineWidth 线宽),
  *   后半程填充淡入、临时轮廓淡出(本来就有的描边保持不变)。
- * fallbackWidth 是层没给 outlineWidth 时的轮廓线宽。
+ * fallbackWidth 是层没给 outlineWidth 时的轮廓线宽;pace 是描轮廓的笔速(null 为按弧长匀速),
+ * 只改这一片内部的快慢,片与片的错峰(staggered)不受影响。
  */
-export function writeStep(layer: PathLayer, u: number, fallbackWidth: number): PathLayer | null {
+export function writeStep(
+  layer: PathLayer,
+  u: number,
+  fallbackWidth: number,
+  pace: RevealPace | null = null,
+): PathLayer | null {
   if (!(u > 0)) {
     return null;
   }
@@ -43,13 +50,13 @@ export function writeStep(layer: PathLayer, u: number, fallbackWidth: number): P
   const { path, paint } = layer;
   const stroked = paint.stroke !== null && paint.strokeWidth > 0;
   if (paint.fill === null) {
-    return stroked ? { path: partialPath(path, 0, u), paint } : null;
+    return stroked ? { path: revealPartial(path, u, pace), paint } : null;
   }
   const outline = stroked ? paint.stroke : paint.fill;
   const width = stroked ? paint.strokeWidth : (layer.outlineWidth ?? fallbackWidth);
   if (u < 0.5) {
     return {
-      path: partialPath(path, 0, u * 2),
+      path: revealPartial(path, u * 2, pace),
       paint: { fill: null, stroke: outline, strokeWidth: width, dash: paint.dash },
     };
   }

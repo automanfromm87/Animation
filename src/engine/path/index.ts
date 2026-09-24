@@ -17,6 +17,8 @@ export {
 } from './path';
 export { parseSvgPath } from './svgPath';
 export { cubicSlice, partialPath, pathLength } from './measure';
+export type { PaceOptions, PenPace, RevealPace } from './pace';
+export { pacedFraction, resolvePace, revealPartial } from './pace';
 export { alignPaths, collapsePath, lerpPath } from './morph';
 export type { PathLayer, PathPaint } from './draw';
 export { drawPath, tracePath } from './draw';

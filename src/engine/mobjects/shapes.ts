@@ -1,6 +1,6 @@
 import type { PathLayer, PathPaint } from '../path/draw';
 import { drawPath } from '../path/draw';
-import { partialPath } from '../path/measure';
+import { revealPartial } from '../path/pace';
 import type { PathData } from '../path/path';
 import {
   EMPTY_PATH,
@@ -25,12 +25,26 @@ import {
 
 let measureCanvas: HTMLCanvasElement | null = null;
 
+/** 装着时所有画布文字(Label、坐标轴刻度与轴名)都按它量,不看 DOM。 */
+let textWidthOverride: ((text: string, fontSize: number) => number) | null = null;
+
+/**
+ * 换掉画布文字的宽度度量(null 恢复)。
+ * @internal 只给 layout/textMetrics.ts 的 installEstimatedTextMetrics 用(版面检查在 node 里按「中文 1em」估)。
+ */
+export function setTextWidthOverride(measure: ((text: string, fontSize: number) => number) | null): void {
+  textWidthOverride = measure;
+}
+
 /** 文本宽度:有 DOM 用 canvas 实测,无 DOM(node 探针)按平均字宽估算。 */
 export function measureTextWidth(
   text: string,
   fontSize: number,
   fontFamily: string,
 ): number {
+  if (textWidthOverride) {
+    return textWidthOverride(text, fontSize);
+  }
   if (typeof document !== 'undefined') {
     measureCanvas ??= document.createElement('canvas');
     const ctx = measureCanvas.getContext('2d');
@@ -210,9 +224,12 @@ export abstract class PathShape extends MObject {
     return true;
   }
 
-  /** 生长到 f(0..1)时画的路径:缺省按弧长截取前 f。扇形、圆点这类有自己长法的覆盖它。 */
+  /**
+   * 生长到 f(0..1,笔的进度)时画的路径:缺省按弧长截取前 f;Create 给了笔速就先把进度换成弧长比例。
+   * 扇形、圆点这类有自己长法的覆盖它(覆盖了就不受笔速影响,除非自己调 revealPartial)。
+   */
   protected revealPath(f: number): PathData {
-    return partialPath(this.toPath(), 0, f);
+    return revealPartial(this.toPath(), f, this.revealPace);
   }
 
   /** 画这个图元的颜料。reveal 是生长比例,null 为完整。 */
@@ -572,6 +589,10 @@ export class Ellipse extends PathShape {
     return this.stretch(circlePath(1));
   }
 
+  /**
+   * 沿单位圆按角度扫再拉伸:两个尖端(曲率最大处)本来就比两侧慢 长轴 / 短轴 倍,
+   * 比按曲率的笔速(任何强度)减速得还多,所以不看 Create 的 pace,有没有笔速都这样画。
+   */
   protected override revealPath(f: number): PathData {
     return this.stretch(arcPath(1, -Math.PI / 2, Math.PI * 2 * f));
   }

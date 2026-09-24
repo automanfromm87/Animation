@@ -180,4 +180,45 @@ export default suite('film 单帧预览', [
       }
     },
   ],
+  [
+    'origin:分几次接着快进,每一步的时刻与从 0 一口气快进是同一个浮点值;不给 origin 会差一个 ulp',
+    async () => {
+      const stepMs = 1000 / 30;
+      /** 按时钟算 elapsed 的最小句柄,记下每次推进到的时刻。 */
+      const hops = async (targets: readonly number[], origin?: number): Promise<number[]> => {
+        const clock = new ManualClock();
+        const seen: number[] = [];
+        const advanceTo = clock.advanceTo.bind(clock);
+        clock.advanceTo = (time: number): void => {
+          seen.push(time);
+          advanceTo(time);
+        };
+        const handle = {
+          done: new Promise<void>(() => undefined),
+          dispose: () => undefined,
+          resize: () => undefined,
+          setPaused: () => undefined,
+          getElapsed: () => (clock.now() - 1000) / 1000,
+        } as SegmentHandle;
+        for (const t of targets) {
+          await fastForwardTo(handle, clock, t, {
+            yieldTask: async () => undefined,
+            ...(origin !== undefined ? { origin } : {}),
+          });
+        }
+        return seen;
+      };
+      // 第 2 步再推到第 4 步:(1000 + 2s) + 2s 与 1000 + 4s 在浮点上差一个 ulp。
+      const once = await hops([4 / 30]);
+      const chained = await hops([2 / 30, 4 / 30], 1000);
+      const naive = await hops([2 / 30, 4 / 30]);
+      const last = (xs: readonly number[]): number => xs[xs.length - 1] ?? Number.NaN;
+      equal(last(once), 1000 + 4 * stepMs);
+      equal(last(chained), last(once), '有 origin 时接着快进应当落在同一个浮点时刻');
+      ok(last(naive) !== last(once), '这组步数本该暴露累加误差,换一组');
+      // 每一步(不算收尾的 +0 推进)都与一口气快进的那一步相同。
+      const steps = (xs: readonly number[]): number[] => xs.filter((t, i) => i === 0 || t !== xs[i - 1]);
+      equal(JSON.stringify(steps(chained)), JSON.stringify(steps(once)));
+    },
+  ],
 ]);

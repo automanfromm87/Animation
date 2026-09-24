@@ -60,6 +60,11 @@ function sampleFinite(
   return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) ? p : null;
 }
 
+/** 还没到区间终点:可去奇点重取时往终点方向挪(到了终点就往回挪),总是朝区间内侧。 */
+function beforeEnd(value: number, range: readonly [number, number]): boolean {
+  return range[1] >= range[0] ? value < range[1] : value > range[1];
+}
+
 type SeamKind = 'same' | 'reversed' | 'open';
 
 function near(p: Readonly<Vec3>, q: Readonly<Vec3>, tol: number): boolean {
@@ -201,6 +206,26 @@ export class ParametricSurface extends Mesh3D implements Resamplable {
 
   getParams(): number[] {
     return [...this.params];
+  }
+
+  /**
+   * 按当前参数采样曲面上的一点(本地 3D 坐标)。画曲面上的曲线、截线、给曲面上的点标注用:
+   * `new ParametricCurve3D((t) => surface.pointAt(t, v0), [u0, u1])`。
+   * 采样规则与网格顶点相同:NaN(可去奇点)先向区间内侧挪万分之一格重取,
+   * 所以网格在那里连续,曲线也连续;仍非有限返回 NaN 坐标(曲线在那里断笔)。
+   */
+  pointAt(u: number, v: number): Vec3 {
+    const du = (this.uRange[1] - this.uRange[0]) / this.uSegs;
+    const dv = (this.vRange[1] - this.vRange[0]) / this.vSegs;
+    const p = sampleFinite(
+      this.fn,
+      u,
+      v,
+      this.params,
+      (beforeEnd(u, this.uRange) ? du : -du) * NUDGE,
+      (beforeEnd(v, this.vRange) ? dv : -dv) * NUDGE,
+    );
+    return p ? { x: p.x, y: p.y, z: p.z } : { x: NaN, y: NaN, z: NaN };
   }
 
   /**

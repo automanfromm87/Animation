@@ -114,6 +114,25 @@ fieldset.aspect-bar {
   cursor: not-allowed;
 }
 
+/*
+ * 故事板模式:舞台只用来量尺寸(缩略图按当前画幅下舞台的尺寸排版),不显示但仍占位;
+ * 网格铺满窗口、自己滚动(body 是 overflow:hidden)。网格内部的样式由故事板视图内联写。
+ */
+.demo.storyboarding .frame {
+  visibility: hidden;
+}
+
+.storyboard {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  /* 顶部让出右上角的工具条(窄屏折两行时约 70px)。 */
+  padding: 72px 16px 32px;
+  color: #ddd;
+  color-scheme: dark;
+}
+
 /* 单帧预览模式的徽标:与工具条按钮同一样式,纯展示。 */
 .preview-badge {
   font-size: 12px;

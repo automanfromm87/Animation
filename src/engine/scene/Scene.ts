@@ -243,6 +243,11 @@ export class Scene {
     this.safeArea = { top: 0, bottom: 0, left: 0, right: 0 };
   }
 
+  /** 当前安全区(屏幕 css 像素,四边都有值;拷贝,改它不影响场景)。visibleWorldBounds 用它算取景可用区。 */
+  getSafeArea(): Required<SafeArea> {
+    return { ...this.safeArea };
+  }
+
   /**
    * 可用区中心相对视口中心的偏移(css 像素)。
    * 传给 createCameraFollow 的 centerOffset,被跟随的对象就和取景镜头一样落在可用区中心。

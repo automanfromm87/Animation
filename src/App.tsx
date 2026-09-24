@@ -4,20 +4,22 @@ import { probeEncodableContainers } from './export/encoder';
 import type { ExportHandle } from './export/types';
 import {
   SCENES,
+  aspectSearch,
   downloadName,
   exportAudioMessage,
   exportErrorMessage,
   isUserCancel,
+  previewSearch,
   progressPercent,
+  resolveAspect,
   resolvePreviewSeconds,
   resolveSceneId,
+  resolveStoryboardParam,
   supportedFormats,
 } from './sceneRegistry';
-import type { ExportFormat, SceneId } from './sceneRegistry';
+import type { AspectMode, ExportFormat, SceneId } from './sceneRegistry';
 import type { SceneEntry, SceneHandle } from './scenes/types';
 import './App.css';
-
-type AspectMode = 'full' | 'w16h9' | 'w4h3' | 'w9h16';
 
 const ASPECT_MODES: Array<{ id: AspectMode; label: string }> = [
   { id: 'full', label: '全屏' },
@@ -70,7 +72,19 @@ function App() {
     typeof window === 'undefined' ? null : resolvePreviewSeconds(window.location.search),
   );
   const previewing = previewSeconds !== null && scene.preview !== undefined;
-  const [aspect, setAspect] = useState<AspectMode>('full');
+  // 故事板模式:一页铺满缩略图(只有影片条目支持)。单帧预览优先:两个参数都在时按 ?preview= 走
+  // (缩略图点进去的地址本来就不带 storyboard)。
+  const [storyboardParam] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : resolveStoryboardParam(window.location.search),
+  );
+  const storyboarding = !previewing && storyboardParam !== null && scene.storyboard !== undefined;
+  const storyboardRef = useRef<HTMLElement | null>(null);
+  // 画幅从地址里的 &aspect= 起步(刷新、从单帧预览返回故事板都不丢),换了再写回地址。
+  const [aspect, setAspect] = useState<AspectMode>(() =>
+    typeof window === 'undefined' ? 'full' : resolveAspect(window.location.search),
+  );
+  // 下载联系表时按当时的画幅起文件名;挂载 effect 不依赖画幅(换画幅只重画,不重挂),只能经 ref 读。
+  const aspectRef = useRef<AspectMode>(aspect);
   /** 当前场景的句柄支持导出(还要浏览器有能导的格式才显示导出)。 */
   const [exportable, setExportable] = useState(false);
   const [formats, setFormats] = useState<ExportFormat[]>(() => supportedFormats());
@@ -101,8 +115,29 @@ function App() {
   useEffect(() => {
     document.title = previewing
       ? `${scene.title} · 预览 ${previewSeconds}s · Mini Manim`
-      : `${scene.title} · Mini Manim`;
-  }, [scene.title, previewing, previewSeconds]);
+      : storyboarding
+        ? `${scene.title} · 故事板 · Mini Manim`
+        : `${scene.title} · Mini Manim`;
+  }, [scene.title, previewing, previewSeconds, storyboarding]);
+
+  useEffect(() => {
+    aspectRef.current = aspect;
+    // 画幅写进地址(replaceState,不进历史):缩略图点进去的 ?preview= 带着它,
+    // 按返回键重新载入的故事板也还是这个画幅。
+    // 只在画幅真变了时改写:别把刚打开的 &storyboard 规范化成 &storyboard=。
+    if (resolveAspect(window.location.search) !== aspect) {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${window.location.pathname}${aspectSearch(window.location.search, aspect)}${window.location.hash}`,
+      );
+    }
+    // 故事板缩略图的链接要跟着新地址走:舞台尺寸没变时 ResizeObserver 不会通知,这里补一次
+    // (尺寸也没变就只刷新链接、不重画)。
+    if (storyboarding) {
+      handleRef.current?.resize();
+    }
+  }, [aspect, storyboarding]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -114,31 +149,58 @@ function App() {
     let observer: ResizeObserver | null = null;
     setLoadError(null);
     const previewMount = previewing && previewSeconds !== null ? scene.preview : undefined;
+    const storyboardMount = storyboarding ? scene.storyboard : undefined;
+    // 故事板铺在 <section class="storyboard"> 里(storyboarding 时它和画布在同一次提交里渲染出来)。
+    const startStoryboard = (
+      mount: NonNullable<SceneEntry['storyboard']>,
+      param: string,
+    ): Promise<SceneHandle> => {
+      const container = storyboardRef.current;
+      if (!container) {
+        return Promise.reject(new Error('故事板容器没有挂上'));
+      }
+      return mount(param, {
+        container,
+        title: scene.title,
+        // 按当前画幅下舞台会有的尺寸排版:隐藏的 .stage 还在文档流里,量它就行(画幅的 CSS 只写一处)。
+        // 画幅切换 / 窗口变化由下面同一个 ResizeObserver 通知,故事板防抖整页重画。
+        stageSize: () => ({ width: canvas.clientWidth, height: canvas.clientHeight }),
+        previewHref: (seconds) =>
+          `${window.location.pathname}${previewSearch(window.location.search, seconds)}${window.location.hash}`,
+        download: (blob) =>
+          triggerDownload(blob, downloadName(sceneId, `storyboard-${aspectRef.current}`, blob.type || 'image/png')),
+      });
+    };
     const mounted: Promise<SceneHandle> =
       previewMount && previewSeconds !== null
         ? previewMount(canvas, previewSeconds)
-        : scene.load().then((mount) => {
-            const reducedMotion = prefersReducedMotion();
-            const h = mount(canvas, {
-              // 播放器自己也能暂停(进度条上的空格键),按钮状态必须跟着走。
-              onPausedChange: (value) => {
-                pausedRef.current = value;
-                setPaused(value);
-              },
-              reducedMotion,
+        : storyboardMount && storyboardParam !== null
+          ? startStoryboard(storyboardMount, storyboardParam)
+          : scene.load().then((mount) => {
+              const reducedMotion = prefersReducedMotion();
+              const h = mount(canvas, {
+                // 播放器自己也能暂停(进度条上的空格键),按钮状态必须跟着走。
+                onPausedChange: (value) => {
+                  pausedRef.current = value;
+                  setPaused(value);
+                },
+                reducedMotion,
+              });
+              // 偏好减少动态效果时,演示场景先停着,由用户决定何时播放(影片有自己的播放控制)。
+              if (reducedMotion && scene.kind === 'scene' && !pausedRef.current) {
+                pausedRef.current = true;
+                setPaused(true);
+              }
+              return h;
             });
-            // 偏好减少动态效果时,演示场景先停着,由用户决定何时播放(影片有自己的播放控制)。
-            if (reducedMotion && scene.kind === 'scene' && !pausedRef.current) {
-              pausedRef.current = true;
-              setPaused(true);
-            }
-            return h;
-          });
     mounted
       .then((h) => {
-        // 挂载与卸载竞速时照样先收下句柄:cleanup 里会 dispose 它。
+        // 挂载与卸载竞速:先挂好、后卸载的,cleanup 里会 dispose 它;
+        // cleanup 已经跑过才挂好的(StrictMode 的第一次挂载、HMR)没人再管,这里当场释放 ——
+        // 否则旧实例接着在同一张画布 / 同一个故事板容器里画。
         handle = h;
         if (cancelled) {
+          h.dispose();
           return;
         }
         handleRef.current = handle;
@@ -171,7 +233,7 @@ function App() {
       setExportPct(null);
       setExportMode(null);
     };
-  }, [scene, previewing, previewSeconds]);
+  }, [scene, previewing, previewSeconds, storyboarding, storyboardParam, sceneId]);
 
   // 离线导出(WebCodecs)能编的容器要异步探测(会按需加载编码库):场景能导出时才探,探到后并进下拉框。
   useEffect(() => {
@@ -333,9 +395,10 @@ function App() {
   };
 
   return (
-    <main className={`demo ${aspect}`}>
+    <main className={`demo ${aspect}${storyboarding ? ' storyboarding' : ''}`}>
       <h1 className="visually-hidden">{scene.title}</h1>
-      <div className="frame">
+      {/* 故事板模式下舞台只用来量尺寸(visibility:hidden,仍占位),对读屏隐藏。 */}
+      <div className="frame" {...(storyboarding ? { 'aria-hidden': true } : {})}>
         <canvas
           ref={canvasRef}
           className="stage"
@@ -354,6 +417,9 @@ function App() {
               : { role: 'img', 'aria-label': `数学动画:${scene.title}` })}
         />
       </div>
+      {storyboarding && (
+        <section ref={storyboardRef} className="storyboard" aria-label={`故事板:${scene.title}`} />
+      )}
       <div className="hud">
         <div className="toolbar">
           <fieldset className="aspect-bar">
@@ -376,6 +442,8 @@ function App() {
             <output className="preview-badge">
               静态预览 {previewSeconds}s · 改 ?preview= 切帧
             </output>
+          ) : storyboarding ? (
+            <output className="preview-badge">故事板 · 改 &amp;storyboard= 换帧</output>
           ) : (
             <div className="action-bar">
               {/*

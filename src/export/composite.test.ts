@@ -1,7 +1,7 @@
 import { createFakeCtx } from '../testing/fakeCtx';
 import { equal, ok, suite } from '../testing/harness';
 import type { ExportProgress, ProgressVisual, SubtitleVisual } from './composite';
-import { compositeFrame, wrapSubtitle } from './composite';
+import { compositeFrame, subtitleBlock, wrapSubtitle } from './composite';
 
 interface LoggedCall {
   op: string;
@@ -489,6 +489,40 @@ export default suite('导出合成', [
       equal(rects(ops, '#000').length, 0, '沿用了画布默认的黑色');
       equal(rects(ops, '#fff').length, 0, '沿用了底色');
       equal(rects(ops, '#888').join(' | '), '640,712,2,8', '认得的颜色照常画');
+    },
+  ],
+  [
+    'subtitleBlock 与合成画的字幕底板是同一个矩形(单行 / 折行、留边的主画面、缩放),量字用 save/restore 包住',
+    () => {
+      const cases = [
+        { text: '一条字幕', rect: { x: 0, y: 0, w: 1280, h: 720 }, scale: 1 },
+        { text: '一段很长很长的中文字幕,长到在窄屏上一定会折成两行甚至三行才放得下', rect: { x: 0, y: 0, w: 200, h: 720 }, scale: 1 },
+        { text: '缩略图上的字幕 with latin words', rect: { x: 40, y: 10, w: 320, h: 180 }, scale: 0.25 },
+      ];
+      for (const c of cases) {
+        const log: LoggedCall[] = [];
+        const sub = { text: c.text, visual: visual() };
+        compositeFrame(strictCtx(log), c.rect.w + c.rect.x * 2, c.rect.h + c.rect.y * 2, {
+          main: { width: c.rect.w, height: c.rect.h } as HTMLCanvasElement,
+          mainRect: c.rect,
+          scale: c.scale,
+          veilAlpha: 0,
+          veilColor: '#fff',
+          subtitle: sub,
+          progress: null,
+        });
+        const plate = log.find((l) => l.op === 'roundRect');
+        const lines = log.filter((l) => l.op === 'fillText').length;
+        const fake = createFakeCtx({ record: true });
+        const block = subtitleBlock(fake.ctx, c.rect, c.scale, sub);
+        equal(JSON.stringify([block?.x, block?.y, block?.w, block?.h]), JSON.stringify(plate?.args?.slice(0, 4)), c.text);
+        equal(block?.lines.length, lines, c.text);
+        ok(c.rect.w !== 200 || lines > 1, '窄屏那条应当折行');
+        // 量字前后 save / restore 包住(假 ctx 不模拟状态栈,只看调用)。
+        equal(fake.calls[0]?.op, 'save');
+        equal(fake.calls[fake.calls.length - 1]?.op, 'restore');
+      }
+      equal(subtitleBlock(createFakeCtx().ctx, { x: 0, y: 0, w: 100, h: 100 }, 1, { text: '   ', visual: visual() }), null);
     },
   ],
 ]);

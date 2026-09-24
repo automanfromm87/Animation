@@ -73,3 +73,10 @@ export const LIGHT = (() => {
   const len = Math.hypot(x, y, z);
   return { x: x / len, y: y / len, z: z / len };
 })();
+
+/**
+ * 被挡住的线的画法:在已累积的透明度上再乘这个系数、画成这个虚线。
+ * 网格线框的隐藏边与 3D 线条被网格挡住的部分共用,同一画面里风格一致。
+ */
+export const HIDDEN_ALPHA = 0.35;
+export const HIDDEN_DASH: readonly number[] = Object.freeze([5, 4]);

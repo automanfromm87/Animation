@@ -1,5 +1,7 @@
 import type { MObject } from '../mobjects/MObject';
 import type { PathLayer } from '../path/draw';
+import type { PaceOptions, RevealPace } from '../path/pace';
+import { resolvePace } from '../path/pace';
 import { IDENTITY_AFFINE } from '../path/path';
 import { defaultLagRatio, staggered, writeStep } from '../path/write';
 import type { AnimationOptions, PlayContext } from './Animation';
@@ -7,7 +9,8 @@ import { Animation } from './Animation';
 import type { Piece } from './family';
 import { collectPieces, matrixScale } from './family';
 
-export interface WriteOptions extends AnimationOptions {
+/** Write 的选项:时长、缓动、片与片的错峰,以及每片描轮廓的笔速(pace: 'curvature')。 */
+export interface WriteOptions extends AnimationOptions, PaceOptions {
   /**
    * 相邻两片开始书写的错开量(占每片时长的比例,0 为同时写)。
    * 缺省按片数取:片越多挨得越紧,最多 0.2(与 Manim 的 Write 一致)。
@@ -34,10 +37,13 @@ interface WriteText {
  * Write:把对象「写」出来。每一片(公式的每个字形、图形的每条路径)先按弧长描出轮廓,
  * 再淡入填充,片与片错峰;只描边的线条全程按弧长生长。组按子元素先序展开;
  * 画布文字(\text 里的中文、Label)在自己那一片的时段里淡入。
+ * pace: 'curvature' 时每片按自己的形状在弯处放慢、直处加快(错峰与总时长不变)。
  * 不改对象的变换与不透明度;结束时撤掉覆盖层、按原样绘制,终态精确。
  */
 export class Write extends Animation {
   private readonly lagRatio: number | undefined;
+  /** 每片描轮廓的笔速(null 为按弧长匀速);片与片的错峰不受它影响。 */
+  private readonly pace: RevealPace | null;
   private slots: Array<WriteSlot | null> = [];
   private texts: WriteText[] = [];
   private lag = 0;
@@ -49,6 +55,7 @@ export class Write extends Animation {
       throw new Error(`Write 的 lagRatio 需要非负有限数,收到 ${lag}`);
     }
     this.lagRatio = lag;
+    this.pace = resolvePace('Write', options);
   }
 
   override begin(context?: PlayContext): void {
@@ -86,7 +93,8 @@ export class Write extends Animation {
       if (!slot) {
         return;
       }
-      const step = writeStep(slot.layer, staggered(alpha, i, count, this.lag), slot.outlineWidth);
+      const u = staggered(alpha, i, count, this.lag);
+      const step = writeStep(slot.layer, u, slot.outlineWidth, this.pace);
       if (step) {
         layers.push(step);
         alphas.push(slot.opacity);

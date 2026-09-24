@@ -1,7 +1,7 @@
 import type { DryRunEnv } from './voice';
 import { prepareVoice, runSegmentToEnd, voiceIdOf, voiceLineIdOf } from './voice';
-import type { LineTiming, SegmentTiming, TimedSegment } from './timed';
-import { estimateSpeech, isTimedSegment } from './timed';
+import type { CueEvent, LineTiming, SegmentTiming, TimedSegment } from './timed';
+import { describeSpanTarget, estimateSpeech, isTimedSegment } from './timed';
 import type { Segment } from './types';
 import type { AudioRef, VoiceProblem, VoiceSegmentTiming } from './voiceSheet';
 import { markNames, parseVoiceSheet, stripMarks, textBeforeMark } from './voiceSheet';
@@ -11,6 +11,7 @@ import { markNames, parseVoiceSheet, stripMarks, textBeforeMark } from './voiceS
  * - 格式与内容:parseVoiceSheet / prepareVoice 报的全部问题(id 对不上、缺句、台词改过、标记缺失……);
  * - 覆盖:有台词的分段在时间表里没有;
  * - 动画放得下:按时间表把每个 timedSegment 干跑一遍,提示点来不及、动画比时间表长都报出来;
+ *   playUntil / playThrough 收不住:目标是开口 / 标记而动画在它之后才收住为 error,句尾(或只是提前量不够)为提醒;
  * - 固定时长的分段:句子超出动画时长、台词改过;
  * - 音频文件在不在(给了 audioExists 时)。
  */
@@ -52,8 +53,12 @@ function timingFor(segment: TimedSegment, entry: VoiceSegmentTiming): SegmentTim
   return { duration: entry.duration, lines };
 }
 
-function describeCue(line: string, mark: string | undefined): string {
-  return mark === undefined ? `台词「${line}」开口` : `台词「${line}」的标记「${mark}」`;
+function describeCue(e: CueEvent): string {
+  if (e.mark !== undefined) {
+    return `台词「${e.line}」的标记「${e.mark}」`;
+  }
+  // 脚本没写 untilLine:playUntil 到这句说完 / 某个标记时,这句还没开口,按约定在调用时开口。
+  return e.implicit === true ? `台词「${e.line}」开口,playUntil 让它在调用时开口` : `台词「${e.line}」开口`;
 }
 
 /** 按时间表干跑一个 timedSegment,把动画跟不上的地方报出来。 */
@@ -75,9 +80,36 @@ async function checkFit(
             level: 'error',
             segment: id,
             line: e.line,
-            message: `动画来不及:第 ${index} 个提示点(${describeCue(e.line, e.mark)})排在 ${e.at.toFixed(2)} 秒,动画 ${e.called.toFixed(2)} 秒才走到,晚了 ${(e.called - e.at).toFixed(2)} 秒`,
+            message: `动画来不及:第 ${index} 个提示点(${describeCue(e)})排在 ${e.at.toFixed(2)} 秒,动画 ${e.called.toFixed(2)} 秒才走到,晚了 ${(e.called - e.at).toFixed(2)} 秒`,
           });
         }
+      },
+      span: (e) => {
+        index += 1;
+        const short = e.ready - e.at;
+        if (short <= TOLERANCE) {
+          return;
+        }
+        const late = e.from + e.runTime - e.at;
+        const where = describeSpanTarget(e);
+        if (e.kind !== 'end' && late > TOLERANCE) {
+          // 与 untilLine / untilMark 来不及同一类:声音已经到了,画面还在动。
+          push({
+            level: 'error',
+            segment: id,
+            line: e.line,
+            message: `动画收不住:第 ${index} 个提示点(${where})排在 ${e.at.toFixed(2)} 秒,${e.api} 的动画 ${e.from.toFixed(2)} 秒开始、至少要 ${e.min.toFixed(2)} 秒,晚了 ${late.toFixed(2)} 秒`,
+          });
+          return;
+        }
+        push({
+          level: 'warning',
+          segment: id,
+          line: e.line,
+          message: `动画时间不够:第 ${index} 个提示点(${where})排在 ${e.at.toFixed(2)} 秒,${e.api} 的动画 ${e.from.toFixed(2)} 秒开始、要 ${e.min.toFixed(2)} 秒${
+            e.lead > 0 ? ` + 提前 ${e.lead.toFixed(2)} 秒` : ''
+          },差 ${short.toFixed(2)} 秒${late > TOLERANCE ? `(动画比这句多播 ${late.toFixed(2)} 秒)` : '(提前量不足)'}`,
+        });
       },
       end: (e) => {
         ended = true;

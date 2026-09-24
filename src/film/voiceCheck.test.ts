@@ -1,3 +1,4 @@
+import { Circle, FadeIn } from '../engine';
 import { createStubCanvas, installDomStub } from '../testing/domStub';
 import { equal, ok, suite } from '../testing/harness';
 import { messageChannelYielder } from '../export/offlineEnv';
@@ -78,6 +79,98 @@ function goodSheet(): { version: 1; segments: Array<{ id: string; duration: numb
       },
     ],
   };
+}
+
+/** x 画到说完(至少 1 秒);y 开口后在标记 m 前 0.2 秒画完(至少 0.5 秒)。 */
+function spanFilm(): Segment[] {
+  return [
+    timedSegment(
+      {
+        id: 'span',
+        name: '按目标',
+        lines: [
+          { id: 'x', text: '一二三四五六七八九十' },
+          { id: 'y', text: '甲乙丙<mark name="m"/>丁戊己' },
+        ],
+      },
+      async (env) => {
+        const c = new Circle(10);
+        const d = new Circle(5);
+        env.scene.add(c, d);
+        await env.untilLine('x');
+        await env.playUntil({ end: 'x' }, new FadeIn(c, { runTime: 1 }));
+        await env.untilLine('y');
+        await env.playUntil({ line: 'y', mark: 'm', lead: 0.2 }, new FadeIn(d, { runTime: 0.5 }));
+      },
+    ),
+  ];
+}
+
+/** spanFilm 的时间表:x 0.3–2.5,y 2.8–4.3(m 在 3.6),时长 5;edit 改动后校验。 */
+async function checkSpans(edit: (x: Line, y: Line) => void): Promise<VoiceProblem[]> {
+  const x: Line = { id: 'x', start: 0.3, end: 2.5 };
+  const y: Line = { id: 'y', start: 2.8, end: 4.3, marks: { m: 3.6 } };
+  edit(x, y);
+  const dom = installDomStub();
+  try {
+    return await checkVoiceSheet(spanFilm(), { segments: [{ id: 'span', duration: 5, lines: [x, y] }] }, dryRun);
+  } finally {
+    dom.restore();
+  }
+}
+
+/**
+ * 开口目标与隐含开口:x 开口后画到 y 开口(至少 3 秒、提前 0.5 秒收住);淡入 1 秒后 playThrough 画到 z 说完
+ * (至少 1 秒);再淡入 3 秒后画到 w 说完 —— w 还没开口,按约定在调用时开口。
+ */
+function startFilm(): Segment[] {
+  return [
+    timedSegment(
+      {
+        id: 'start',
+        name: '开口目标',
+        lines: [
+          { id: 'x', text: '一二三四五六七八九十' },
+          { id: 'y', text: '然后呢。' },
+          { id: 'z', text: '甲乙丙丁戊己' },
+          { id: 'w', text: '天地玄黄宇宙洪荒' },
+        ],
+      },
+      async (env) => {
+        const dots = [new Circle(10), new Circle(8), new Circle(6), new Circle(4), new Circle(2)];
+        env.scene.add(...dots);
+        const [c0, c1, c2, c3, c4] = dots as [Circle, Circle, Circle, Circle, Circle];
+        await env.untilLine('x');
+        await env.playUntil({ start: 'y', lead: 0.5 }, new FadeIn(c0, { runTime: 3 }));
+        await env.untilLine('z');
+        await env.play(new FadeIn(c1, { runTime: 1 }));
+        await env.playThrough('z', new FadeIn(c2, { runTime: 1 }));
+        await env.play(new FadeIn(c3, { runTime: 3 }));
+        await env.playUntil({ end: 'w' }, new FadeIn(c4, { runTime: 1 }));
+      },
+    ),
+  ];
+}
+
+/** startFilm 的合格时间表(layoutSheet 按实测 x 2.2、y 1、z 2.45、w 2 秒排出来的);edit 改动后校验。 */
+async function checkStarts(edit: (lines: Record<'x' | 'y' | 'z' | 'w', Line>) => void): Promise<VoiceProblem[]> {
+  const lines = {
+    x: { id: 'x', start: 0.3, end: 2.5 },
+    y: { id: 'y', start: 3.8, end: 4.8 },
+    z: { id: 'z', start: 5.05, end: 7.5 },
+    w: { id: 'w', start: 10.5, end: 12.5 },
+  };
+  edit(lines);
+  const dom = installDomStub();
+  try {
+    return await checkVoiceSheet(
+      startFilm(),
+      { segments: [{ id: 'start', duration: 13.1, lines: [lines.x, lines.y, lines.z, lines.w] }] },
+      dryRun,
+    );
+  } finally {
+    dom.restore();
+  }
 }
 
 async function check(raw: unknown, options?: CheckOptions): Promise<VoiceProblem[]> {
@@ -262,6 +355,68 @@ export default suite('配音时间表校验', [
       } finally {
         dom.restore();
       }
+    },
+  ],
+  [
+    'playUntil 收不住:开口 / 标记目标之后才收住是错误;句尾或只是提前量不够是提醒;提示点编号把 playUntil 也算上',
+    async () => {
+      const good = await checkSpans(() => undefined);
+      equal(good.length, 0, formatProblems(good));
+
+      const shortLine = await checkSpans((x) => {
+        x.end = 1;
+      });
+      equal(errors(shortLine).length, 0, formatProblems(shortLine));
+      ok(has(shortLine, 'warning', '动画时间不够:第 2 个提示点(台词「x」说完)'), formatProblems(shortLine));
+      ok(has(shortLine, 'warning', '动画比这句多播'), formatProblems(shortLine));
+
+      const earlyMark = await checkSpans((_, y) => {
+        y.marks = { m: 3 };
+      });
+      ok(has(earlyMark, 'error', '动画收不住:第 4 个提示点(台词「y」的标记「m」)'), formatProblems(earlyMark));
+      ok(has(earlyMark, 'error', '晚了 0.3'), formatProblems(earlyMark));
+
+      const leadOnly = await checkSpans((_, y) => {
+        y.marks = { m: 3.4 };
+      });
+      equal(errors(leadOnly).length, 0, formatProblems(leadOnly));
+      ok(has(leadOnly, 'warning', '提前量不足'), formatProblems(leadOnly));
+    },
+  ],
+  [
+    '开口目标 / playThrough / 隐含开口:动画在开口之后才收住是错误,只差提前量是提醒;消息照脚本写的说',
+    async () => {
+      const good = await checkStarts(() => undefined);
+      equal(good.length, 0, formatProblems(good));
+
+      const early = await checkStarts((l) => {
+        l.y.start = 2.8;
+      });
+      ok(has(early, 'error', '动画收不住:第 2 个提示点(台词「y」开口)'), formatProblems(early));
+      ok(has(early, 'error', 'playUntil 的动画'), formatProblems(early));
+      ok(has(early, 'error', '晚了 0.50'), formatProblems(early));
+
+      const leadOnly = await checkStarts((l) => {
+        l.y.start = 3.5;
+      });
+      equal(errors(leadOnly).length, 0, formatProblems(leadOnly));
+      ok(has(leadOnly, 'warning', '动画时间不够:第 2 个提示点(台词「y」开口)'), formatProblems(leadOnly));
+      ok(has(leadOnly, 'warning', '提前量不足'), formatProblems(leadOnly));
+
+      const shortZ = await checkStarts((l) => {
+        l.z.end = 6.5;
+      });
+      equal(errors(shortZ).length, 0, formatProblems(shortZ));
+      ok(has(shortZ, 'warning', '第 4 个提示点(台词「z」说完)'), formatProblems(shortZ));
+      ok(has(shortZ, 'warning', 'playThrough 的动画'), formatProblems(shortZ));
+
+      const wEarly = await checkStarts((l) => {
+        l.w.start = 8.5;
+      });
+      ok(
+        has(wEarly, 'error', '动画来不及:第 5 个提示点(台词「w」开口,playUntil 让它在调用时开口)'),
+        formatProblems(wEarly),
+      );
     },
   ],
 ]);

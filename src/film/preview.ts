@@ -26,6 +26,13 @@ export interface FastForwardOptions {
   yieldTask?: () => Promise<void>;
   /** 每步之前检查:返回 true 就中止(新的跳转来了、播放器销毁了)。 */
   shouldAbort?: () => boolean;
+  /**
+   * 时间网格的原点:分段挂载时的 clock.now()。给了就按「原点 + 第几步 × 步长」推进 ——
+   * 同一段上分几次接着快进,每一步的时刻和从 0 一口气快进(单帧预览)是同一个浮点表达式,
+   * 不会因为「上次停下的时刻 + i × 步长」差一个 ulp,让刚好卡在边界上的时间线差出一帧。
+   * 不给就以本次调用开始时的时刻为原点(只快进一次时两者相同)。
+   */
+  origin?: number;
 }
 
 export interface FastForwardResult {
@@ -66,14 +73,18 @@ export async function fastForwardTo(
     const steps = Math.max(0, Math.round((want - safeElapsed(handle)) / step));
     // 绝对时刻推进(与离线导出同式):相对累加的浮点误差会让「刚好 1 秒」的
     // 时间线差 1e-13 没播满,逐出的帧与成片差一帧。
+    // 有原点时从原点数步:当前时刻先取整回网格上的第 k0 步(取整误差不到半步,时钟不会倒退)。
     const t0 = clock.now();
+    const origin = options?.origin;
+    const base = origin !== undefined && Number.isFinite(origin) ? origin : t0;
+    const k0 = Math.max(0, Math.round((t0 - base) / stepMs));
     handle.setDryRun?.(true);
     try {
       for (let i = 0; i < steps; i += 1) {
         if (options?.shouldAbort?.()) {
           return { elapsed: safeElapsed(handle), aborted: true };
         }
-        clock.advanceTo(t0 + (i + 1) * stepMs);
+        clock.advanceTo(base + (k0 + i + 1) * stepMs);
         await yieldTask();
       }
     } finally {
@@ -89,6 +100,20 @@ export async function fastForwardTo(
     return { elapsed: safeElapsed(handle), aborted: false };
   } finally {
     own?.close();
+  }
+}
+
+/**
+ * 等网页字体就绪(document.fonts.ready;没有 document 的环境直接返回)。
+ * 中文回退字要等网页字体:单帧预览、故事板都只画一次,必须等,不像直播能晚到重画。
+ */
+export async function waitForWebFonts(): Promise<void> {
+  if (typeof document === 'undefined') {
+    return;
+  }
+  const fonts = (document as unknown as { fonts?: { ready?: Promise<unknown> } }).fonts;
+  if (fonts?.ready) {
+    await fonts.ready;
   }
 }
 
@@ -130,13 +155,7 @@ export async function previewFrameAt(
   if (!segment) {
     throw new FilmError('no-segments', '影片没有任何分段');
   }
-  // 中文回退字要等网页字体:预览只画一次,必须等,不像直播能晚到重画。
-  if (typeof document !== 'undefined') {
-    const fonts = (document as unknown as { fonts?: { ready?: Promise<unknown> } }).fonts;
-    if (fonts?.ready) {
-      await fonts.ready;
-    }
-  }
+  await waitForWebFonts();
   const visual = resolveSubtitleVisual(canvas.clientWidth, undefined, plan, 'sans-serif');
   const clock = new ManualClock();
   const context: SegmentContext = {

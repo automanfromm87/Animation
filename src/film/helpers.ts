@@ -17,6 +17,7 @@ import type {
   LayoutAlign,
   MObject,
   MeasureContext,
+  PaceOptions,
   Playable,
   Point,
   RateFunction,
@@ -27,6 +28,8 @@ import type {
 import { cardSegment, directedSegment } from './segments';
 import type { SegmentEnv } from './segments';
 import type { Segment, Subtitle } from './types';
+import { Illustration, Picture } from '../engine';
+import type { ImageAsset, SvgAsset } from '../engine';
 
 // ---------------------------------------------------------------------------
 // 构造与布景
@@ -49,6 +52,33 @@ export function label(text: string, fontSize: number, at?: Point): Label {
     l.moveTo(at);
   }
   return l;
+}
+
+/**
+ * 图片:按宽度等比缩放(高按原图比例)+ 位置一步到位。
+ * src 是 loadImage 拿到的资源,或已预加载的路径(public/ 下,如 '/img/earth.png')——
+ * 资源要在影片模块顶层 await 好(const EARTH = await loadImage('/img/earth.png')),脚本里不能等网络。
+ * 只给高度、限定框(contain / cover)用 new Picture(src, { … })。
+ */
+export function picture(src: string | ImageAsset, width: number, at?: Point): Picture {
+  const p = new Picture(src, { width });
+  if (at) {
+    p.moveTo(at);
+  }
+  return p;
+}
+
+/**
+ * SVG 插画:按宽度等比缩放 + 位置一步到位。src 是 SVG 源码(以 '<' 开头,不用预加载)、
+ * loadSvg 拿到的资源,或已预加载的路径(public/ 下,如 '/svg/cat.svg')。
+ * 部件按 id 取:illustration(CAT, 200).part('tail')。
+ */
+export function illustration(src: string | SvgAsset, width: number, at?: Point): Illustration {
+  const illo = new Illustration(src, { width });
+  if (at) {
+    illo.moveTo(at);
+  }
+  return illo;
 }
 
 /**
@@ -138,6 +168,8 @@ export interface PlotIntroOptions {
   axesRunTime?: number;
   /** 曲线描出时长(秒),默认 2.5。 */
   curveRunTime?: number;
+  /** 曲线的笔速,如 { pace: 'curvature' }(弯处放慢、直处加快,时长不变);默认按弧长匀速。 */
+  curvePace?: PaceOptions;
   /** 开场之后的停留(秒),默认 1。 */
   holdSeconds?: number;
   /** 与开场同播的其它动画。 */
@@ -152,7 +184,7 @@ export async function plotIntro(
 ): Promise<void> {
   await env.play(
     new FadeIn(p.axes, { runTime: options?.axesRunTime ?? 1 }),
-    new Create(p.curve, { runTime: options?.curveRunTime ?? 2.5 }),
+    new Create(p.curve, { ...options?.curvePace, runTime: options?.curveRunTime ?? 2.5 }),
     ...(options?.with ?? []),
   );
   const holdSeconds = options?.holdSeconds ?? 1;

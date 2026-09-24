@@ -53,6 +53,27 @@ export default suite('颜色 / 线宽补间 ColorTo', [
     },
   ],
   [
+    '简写同样保留原描边的透明度(半透明的线换色后仍半透明);显式 stroke 照写的来',
+    () => {
+      const faint = new Line({ x: 0, y: 0 }, { x: 10, y: 0 }).setStyle({ stroke: 'rgba(0, 0, 0, 0.3)' });
+      const tween = new ColorTo(faint, '#ff0000');
+      tween.begin();
+      tween.finish();
+      const stroke = parseColor(String(faint.getStyleOverride().stroke));
+      equal(stroke?.r, 255);
+      close(stroke?.a ?? NaN, 0.3, 1e-9, '透明度保留');
+      const solid = new Line({ x: 0, y: 0 }, { x: 10, y: 0 });
+      const plain = new ColorTo(solid, '#ff0000');
+      plain.begin();
+      plain.finish();
+      equal(solid.getStyleOverride().stroke, '#ff0000', '不透明的描边原样写目标色');
+      const explicit = new ColorTo(faint, { stroke: '#0000ff' });
+      explicit.begin();
+      explicit.finish();
+      equal(faint.getStyleOverride().stroke, '#0000ff', '显式 stroke 不做透明度处理');
+    },
+  ],
+  [
     '线宽补间;具体键优先于简写;非法线宽抛错',
     () => {
       const line = new Line({ x: 0, y: 0 }, { x: 10, y: 0 });

@@ -63,6 +63,24 @@ export interface SceneHooks {
   readonly reducedMotion: boolean;
 }
 
+/**
+ * 故事板(一页多帧缩略图)挂载时宿主给的环境。只有影片有故事板。
+ * 按结构写(只用 DOM 类型和字符串):取帧规格的语法和类型都在影片层,场景层不认识它们。
+ * 宿主负责:一个空的可滚动容器、量舞台尺寸(当前画幅下播放器画布会有的 css 尺寸)、单帧预览地址、下载。
+ */
+export interface StoryboardHost {
+  /** 缩略图网格挂在这里:宿主保证是空的,内容由故事板自己建、dispose 时自己清。 */
+  readonly container: HTMLElement;
+  /** 成片排版用的舞台 css 尺寸。每轮重画开头读一次。 */
+  readonly stageSize: () => { readonly width: number; readonly height: number };
+  /** 片名(页头、联系表标题)。 */
+  readonly title?: string;
+  /** 某一时刻(全片秒)的单帧预览地址:点缩略图跳过去。 */
+  readonly previewHref: (seconds: number) => string;
+  /** 下载整张联系表 PNG(宿主定文件名、触发下载);不给就不显示下载按钮。 */
+  readonly download?: (blob: Blob) => void;
+}
+
 /** 把场景挂到画布上。 */
 export type SceneMount = (canvas: HTMLCanvasElement, hooks: SceneHooks) => SceneHandle;
 
@@ -80,4 +98,10 @@ export interface SceneEntry {
    * 句柄没有暂停/导出;resize 会重画同一帧(防抖)。
    */
   readonly preview?: (canvas: HTMLCanvasElement, seconds: number) => Promise<SceneHandle>;
+  /**
+   * 故事板(只有影片有):param 是 URL 里 storyboard= 的原文(可为空串,语法由影片层解析),
+   * 每帧按成片合成画成缩略图铺在 host.container 里,逐帧出图。
+   * 句柄没有暂停 / 导出;resize 在舞台尺寸变了时防抖整页重画。
+   */
+  readonly storyboard?: (param: string, host: StoryboardHost) => Promise<SceneHandle>;
 }

@@ -1,6 +1,6 @@
 import type { DryRunEnv } from './voice';
 import { draftTiming, voiceIdOf, voiceLineIdOf } from './voice';
-import { estimateSpeech, isTimedSegment } from './timed';
+import { describeSpanShortfall, estimateSpeech, isTimedSegment } from './timed';
 import type { Segment } from './types';
 import type { AudioRef, VoiceLineTiming, VoiceProblem, VoiceSegmentTiming, VoiceTimingSheet } from './voiceSheet';
 import { markNames, stripMarks, textBeforeMark } from './voiceSheet';
@@ -9,8 +9,10 @@ import { markNames, stripMarks, textBeforeMark } from './voiceSheet';
  * 台词稿(交给配音方)与时间表排期(配音方的参考实现)。
  *
  * 台词稿:每段每句的 id、台词(带 <mark> 标签)、草稿时间;timedSegment 还带「动画需要多少时间」——
- * 脚本按顺序踩提示点(某句开口、句中某个词),needs 是从上一个提示点到这里动画至少要的秒数,
- * 配音方排时间时满足它,画面就不会跟不上声音。
+ * 脚本按顺序踩提示点(某句开口、句中某个词、某句说完),needs 是从上一个提示点到这里动画至少要的秒数,
+ * 配音方排时间时满足它,画面就不会跟不上声音。句尾提示点来自 playUntil / playThrough:
+ * 那句说完不早于上一个提示点 + needs(做不到只提醒:动画比这句多播一会儿)。playUntil 画到还没开口的句子
+ * (说完或某个标记)时,前面还有一个那句的开口提示点:那句不早于调用时开口,动画才铺得开。
  *
  * layoutSheet:拿到每句实测的音频时长(和句中标记的时刻)后,按上面的约束排出一份时间表。
  * 配音方用自己的语言写一遍也行,规则见 docs/voice.md。
@@ -36,11 +38,15 @@ export interface VoiceScriptLine {
   readonly needsBefore?: number;
   /** timed 段:从上一个提示点起,动画至少要这么多秒才轮到这个词。 */
   readonly markNeeds?: Readonly<Record<string, number>>;
+  /** timed 段:从上一个提示点起,动画至少要这么多秒,这句才该说完(脚本没有句尾提示点时省略)。 */
+  readonly needsEnd?: number;
 }
 
 export interface VoiceScriptCue {
   readonly line: string;
   readonly mark?: string;
+  /** 句尾提示点:这句说完不早于上一个提示点 + needs(没有 mark)。 */
+  readonly end?: true;
   /** 从上一个提示点(或段首)到这里动画至少要的秒数。 */
   readonly needs: number;
 }
@@ -95,10 +101,23 @@ export async function buildVoiceScript(
     if (isTimedSegment(segment)) {
       try {
         const draft = await draftTiming(segment, dryRun);
+        for (const e of draft.shortfalls) {
+          problems.push({
+            level: 'warning',
+            segment: id,
+            line: e.line,
+            message: `草稿里动画时间不够:${describeSpanShortfall(e)}(配音一快会更紧;调小 min / lead,或换个更晚的目标)`,
+          });
+        }
         const firstLineCue = new Map<string, number>();
+        const firstEndCue = new Map<string, number>();
         const markNeeds = new Map<string, Record<string, number>>();
         for (const cue of draft.cues) {
-          if (cue.mark === undefined) {
+          if (cue.end === true) {
+            if (!firstEndCue.has(cue.line)) {
+              firstEndCue.set(cue.line, cue.needs);
+            }
+          } else if (cue.mark === undefined) {
             if (!firstLineCue.has(cue.line)) {
               firstLineCue.set(cue.line, cue.needs);
             }
@@ -118,6 +137,7 @@ export async function buildVoiceScript(
           lines: segment.lines.map((line) => {
             const t = draft.timing.lines[line.id];
             const needs = firstLineCue.get(line.id);
+            const needsEnd = firstEndCue.get(line.id);
             const marks = markNeeds.get(line.id);
             const draftMarks: Record<string, number> = {};
             for (const [name, at] of Object.entries(t?.marks ?? {})) {
@@ -135,9 +155,15 @@ export async function buildVoiceScript(
               },
               ...(needs !== undefined ? { needsBefore: ms(needs) } : {}),
               ...(marks ? { markNeeds: marks } : {}),
+              ...(needsEnd !== undefined ? { needsEnd: ms(needsEnd) } : {}),
             };
           }),
-          cues: draft.cues.map((c) => ({ line: c.line, ...(c.mark !== undefined ? { mark: c.mark } : {}), needs: ms(c.needs) })),
+          cues: draft.cues.map((c) => ({
+            line: c.line,
+            ...(c.mark !== undefined ? { mark: c.mark } : {}),
+            ...(c.end === true ? { end: true as const } : {}),
+            needs: ms(c.needs),
+          })),
           tail: ms(draft.tail),
         });
       } catch (e) {
@@ -287,7 +313,24 @@ function layoutTimed(
     }
     const due = lastCue + cue.needs;
     let at: number;
-    if (cue.mark === undefined) {
+    if (cue.end === true) {
+      let slot = slots.get(line.id);
+      if (!slot) {
+        // 第一次碰到这句就是句尾:让这句正好在动画收住时说完(或更晚)。
+        placeUpTo(line.id);
+        slot = place(line, due - durationOf(line));
+      }
+      at = slot.end;
+      if (at < due - 1e-9) {
+        // 句尾按音频定,挪不动;动画多播一会儿不影响对齐(之后的提示点从动画收住时算)。
+        problems.push({
+          level: 'warning',
+          segment: segment.id,
+          line: line.id,
+          message: `第 ${index + 1} 个提示点(台词「${line.id}」说完)排在 ${ms(at)} 秒,动画要到 ${ms(due)} 秒才收住:动画会比这句多播 ${ms(due - at)} 秒(可以接受;要对齐就调小 min,或让这句说慢一点)`,
+        });
+      }
+    } else if (cue.mark === undefined) {
       const hit = slots.get(line.id);
       if (hit) {
         at = hit.start;
@@ -415,8 +458,8 @@ function layoutFixed(
 /**
  * 按实测音频排时间表:
  * - timed 段:每句不早于「上一句说完 + 停顿」;按脚本踩提示点的顺序满足每个提示点前动画要的时间
- *   (标记来得太早、这句又没法整体后挪时报出来,需要在那个词前加停顿);时长 = max(最后一句说完 + 段尾留白,
- *   最后一个提示点 + 动画尾巴)。
+ *   (标记来得太早、这句又没法整体后挪时报出来,需要在那个词前加停顿;句尾提示点:那句说完 ≥ 上一个提示点 + needs,
+ *   做不到只提醒);时长 = max(最后一句说完 + 段尾留白,最后一个提示点 + 动画尾巴)。
  * - fixed 段:动画时长固定,每句放在自己字幕窗口的起点;说得比窗口长时报出来(撞上下一句为 error)。
  */
 export function layoutSheet(

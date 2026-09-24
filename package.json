@@ -20,7 +20,8 @@
     "voice:script": "node scripts/voice.mjs script",
     "voice:layout": "node scripts/voice.mjs layout",
     "voice:check": "node scripts/voice.mjs check",
-    "voice:demo": "node scripts/voice-demo-say.mjs"
+    "voice:demo": "node scripts/voice-demo-say.mjs",
+    "layout:check": "node scripts/layout-check.mjs"
   },
   "dependencies": {
     "mathjax-full": "^3.2.2",

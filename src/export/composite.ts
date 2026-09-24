@@ -223,6 +223,62 @@ function fillRoundRect(
   ctx.fill();
 }
 
+/** 字幕块在输出画布上的盒(像素)与折好的行。 */
+export interface SubtitleBlock {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly lines: readonly string[];
+}
+
+/** 字幕块的几何(ctx.font 已设成缩放后的字号):折行、盒宽、底距。drawSubtitle 与 subtitleBlock 共用这一份。 */
+function layoutSubtitle(
+  ctx: CanvasRenderingContext2D,
+  rect: MainRect,
+  scale: number,
+  sub: ExportSubtitle,
+): SubtitleBlock | null {
+  const v = sub.visual;
+  const maxWidth = rect.w * v.maxWidthRatio;
+  const lines = wrapSubtitle(sub.text, ctx, maxWidth);
+  if (lines.length === 0) {
+    return null;
+  }
+  const padX = v.padX * scale;
+  const padY = v.padY * scale;
+  const lineH = v.fontPx * scale * v.lineHeight;
+  let widest = 0;
+  for (const line of lines) {
+    widest = Math.max(widest, ctx.measureText(line).width);
+  }
+  // 与 DOM 字幕条(width:fit-content + max-width)同一套盒宽:
+  // 折了行的块撑满最大宽度,单行块收缩到文字宽。
+  const textW = lines.length > 1 ? Math.max(widest, maxWidth) : widest;
+  const w = textW + padX * 2;
+  const h = lineH * lines.length + padY * 2;
+  return { x: rect.x + (rect.w - w) / 2, y: rect.y + rect.h - v.bottomPx * scale - h, w, h, lines };
+}
+
+/**
+ * 字幕块在输出画布上的盒(与 compositeFrame 画出来的底板同一个矩形),没有字要画时为 null。
+ * 给版面检查用(字幕压没压住画面内容);会在 ctx 上量字,状态用 save/restore 包住。
+ */
+export function subtitleBlock(
+  ctx: CanvasRenderingContext2D,
+  rect: MainRect,
+  scale: number,
+  sub: ExportSubtitle,
+): SubtitleBlock | null {
+  ctx.save();
+  try {
+    ctx.font = `${sub.visual.fontPx * scale}px ${sub.visual.fontFamily}`;
+    return layoutSubtitle(ctx, rect, scale, sub);
+  } finally {
+    ctx.restore();
+  }
+}
+
 function drawSubtitle(
   ctx: CanvasRenderingContext2D,
   rect: MainRect,
@@ -235,28 +291,15 @@ function drawSubtitle(
   ctx.font = `${fontPx}px ${v.fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const maxWidth = rect.w * v.maxWidthRatio;
-  const lines = wrapSubtitle(sub.text, ctx, maxWidth);
-  if (lines.length > 0) {
-    const padX = v.padX * scale;
+  const block = layoutSubtitle(ctx, rect, scale, sub);
+  if (block) {
     const padY = v.padY * scale;
     const lineH = fontPx * v.lineHeight;
-    let widest = 0;
-    for (const line of lines) {
-      widest = Math.max(widest, ctx.measureText(line).width);
-    }
-    // 与 DOM 字幕条(width:fit-content + max-width)同一套盒宽:
-    // 折了行的块撑满最大宽度,单行块收缩到文字宽。
-    const textW = lines.length > 1 ? Math.max(widest, maxWidth) : widest;
-    const w = textW + padX * 2;
-    const h = lineH * lines.length + padY * 2;
-    const x = rect.x + (rect.w - w) / 2;
-    const y = rect.y + rect.h - v.bottomPx * scale - h;
     ctx.fillStyle = v.background;
-    fillRoundRect(ctx, x, y, w, h, v.radius * scale);
+    fillRoundRect(ctx, block.x, block.y, block.w, block.h, v.radius * scale);
     ctx.fillStyle = v.color;
-    lines.forEach((l, i) => {
-      ctx.fillText(l, rect.x + rect.w / 2, y + padY + lineH * (i + 0.5));
+    block.lines.forEach((l, i) => {
+      ctx.fillText(l, rect.x + rect.w / 2, block.y + padY + lineH * (i + 0.5));
     });
   }
   ctx.restore();

@@ -1,43 +1,25 @@
-import type { ResolvedStyle } from '../theme/Theme';
-import { MObject } from '../mobjects/MObject';
+import type { ResolvedStyle, StyleOverride, Theme } from '../theme/Theme';
+import { MObject, NO_STYLE } from '../mobjects/MObject';
 import type { Box } from '../mobjects/types';
 import { boxFromSize } from '../mobjects/types';
 import { Projection3D } from './Projection3D';
-import { LIGHT, SHADE_LEVELS, colorAlpha, shadeTableFor } from './shading';
+import {
+  HIDDEN_ALPHA,
+  HIDDEN_DASH,
+  LIGHT,
+  SHADE_LEVELS,
+  colorAlpha,
+  shadeTableFor,
+} from './shading';
 import type { EdgeTopology } from './topology';
 import { buildEdgeTopology, isClosedOrientable } from './topology';
+import type { Vec3 } from './vec3';
 
 export { shadeColor } from './shading';
-
-/**
- * 3D 坐标约定(全库一致):x 向右、y 向下(与 Canvas 一致)、z 指向观察者,角度一律弧度。
- * 视点在旋转后坐标系的 (0, 0, viewDistance),朝 -z 看。
- * 轴对称的立体、距离场与参数曲面预设都以 y 为对称轴。
- */
-export interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
-}
-
-/**
- * 先绕 Y 轴转 rotY(物体自转),再绕 X 轴转 rotX(相机仰角)。
- * 顺序不能反:反过来 rotY 会变成绕世界 Y 轴的方位角,
- * Spin3D 就不是原地转台旋转而是「俯视/仰视来回翻」。
- */
-export function rotateVec(v: Vec3, rotX: number, rotY: number): Vec3 {
-  const cosY = Math.cos(rotY);
-  const sinY = Math.sin(rotY);
-  const x1 = v.x * cosY + v.z * sinY;
-  const z1 = -v.x * sinY + v.z * cosY;
-  const cosX = Math.cos(rotX);
-  const sinX = Math.sin(rotX);
-  return {
-    x: x1,
-    y: v.y * cosX - z1 * sinX,
-    z: v.y * sinX + z1 * cosX,
-  };
-}
+// Vec3 与 rotateVec 挪到了无依赖的 vec3.ts(Projection3D 也要用,不能反过来 import 这里);
+// 这里再导出,旧的 import 路径不变。
+export type { Vec3 } from './vec3';
+export { rotateVec } from './vec3';
 
 /** 当前变换下 1 设备像素对应的局部长度;拿不到变换(测试桩)就按 1。 */
 function devicePixel(ctx: CanvasRenderingContext2D): number {
@@ -193,6 +175,8 @@ function validateGeometry(
  * 若 setStyle 指定了 fill,则按深度排序填色 + 平面明暗(画家算法)。
  * 隐藏线只做背面剔除:对封闭、可定向的曲面才成立,凹处的自遮挡不处理;
  * 开放/不可定向的曲面(twoSided,默认按拓扑自动判定)边一律画实线。
+ * 网格之间互不遮挡;3D 线条与标注(Line3D、Anchor3D……)可以被列为 occluders 的网格遮挡,
+ * 它们借 occlusionView() 读同一份视图缓存,自己判断哪一段被挡住。
  */
 export class Mesh3D extends MObject {
   private verts: Vec3[];
@@ -223,6 +207,8 @@ export class Mesh3D extends MObject {
   /** 'auto' 的判定结果与它对应的拓扑版本。 */
   private autoTwoSided = false;
   private sidedFor = -1;
+  /** 最近一次 render 解析出的填充色(含容器继承,3D 线条的遮挡强度用);还没画过为 undefined。 */
+  private renderedFill: string | null | undefined = undefined;
 
   /** 第三个参数也接受单独一个 Projection3D(旧写法)。 */
   constructor(
@@ -286,6 +272,62 @@ export class Mesh3D extends MObject {
 
   set viewDistance(value: number) {
     this.projection.viewDistance = value;
+  }
+
+  /** @internal 3D 线条遮挡用:几何版本(顶点或拓扑任何变化都会变)。 */
+  get geometryVersion(): number {
+    return this.shapeVersion;
+  }
+
+  /**
+   * @internal 3D 线条遮挡用:当前视角下的视图缓存(与绘制同一份投影)与单双面。
+   * 返回的缓冲是网格逐帧复用的:调用方只能当场读完,不能留存。
+   */
+  occlusionView(): { view: MeshView; twoSided: boolean } {
+    return { view: this.updateView(), twoSided: this.twoSided };
+  }
+
+  /**
+   * @internal 3D 线条遮挡用:这个网格挡住身后线条的强度 0..1(0 = 不挡)。
+   * 填色时 = 自身 opacity × 填充色的 alpha:低 alpha 的半透明截面只「挡」掉相应的一部分,
+   * 身后的线不会比网格本身看起来更不透明。不填色时:双面(开放)曲面是 0 ——
+   * 它自己的边一律画实线、没有隐藏边,透过网格看到的轴也不该画成虚线;
+   * 单面(封闭)线框照样全挡,与它自己的背面棱画淡虚线一致(棱锥里的高线画虚线)。
+   * 填充色取最近一次 render 解析出的值(含容器继承;Space3D 里网格先画,就是这一帧的),
+   * 还没画过时退回自身 setStyle / 构造默认的 fill。只看网格自身,不看祖先组的透明度。
+   */
+  occlusionStrength(): number {
+    const k = Math.min(1, Math.max(0, this.opacity));
+    if (!(k > 0)) {
+      return 0;
+    }
+    const fill = this.renderedFill !== undefined ? this.renderedFill : this.ownFill();
+    if (fill === null) {
+      return this.twoSided ? 0 : k;
+    }
+    const alpha = colorAlpha(fill);
+    return Number.isFinite(alpha) ? k * Math.min(1, Math.max(0, alpha)) : k;
+  }
+
+  /** 记下这一帧解析出的填充色(与 MObject.render 的解析同一优先级:自身 > 容器链 > 构造默认 > 主题)。 */
+  override render(
+    ctx: CanvasRenderingContext2D,
+    theme: Theme,
+    parentOpacity = 1,
+    inherited: Readonly<StyleOverride> = NO_STYLE,
+  ): void {
+    this.renderedFill = firstDefined(
+      this.styleOverride.fill,
+      inherited.fill,
+      this.defaultStyle.fill,
+      theme.fill,
+    );
+    super.render(ctx, theme, parentOpacity, inherited);
+  }
+
+  /** 没画过时的填充色:自身 setStyle,其次构造默认,都没有就是不填色。 */
+  private ownFill(): string | null {
+    return firstDefined(this.styleOverride.fill, this.defaultStyle.fill, null);
   }
 
   /** 按当前 rotX/rotY 旋转并透视投影后的 2D 包围盒(与实际绘制共用同一份投影)。 */
@@ -700,10 +742,10 @@ export class Mesh3D extends MObject {
     if (hidden > 0) {
       // 隐藏边:在已累积的 alpha 上再乘系数,父级 Group 的淡入淡出才跟得上。
       ctx.save();
-      ctx.globalAlpha = ctx.globalAlpha * 0.35;
+      ctx.globalAlpha = ctx.globalAlpha * HIDDEN_ALPHA;
       ctx.strokeStyle = style.stroke;
       ctx.lineWidth = style.strokeWidth;
-      ctx.setLineDash([5, 4]);
+      ctx.setLineDash(HIDDEN_DASH as number[]);
       strokeEdges(0);
       ctx.restore();
     }
@@ -745,4 +787,14 @@ export function sameParams(a: readonly number[], b: readonly number[]): boolean 
     }
   }
   return true;
+}
+
+/** 第一个不是 undefined 的填充色(fill 允许显式 null 表示不填充,所以不能用 ??)。 */
+function firstDefined(...values: Array<string | null | undefined>): string | null {
+  for (const v of values) {
+    if (v !== undefined) {
+      return v;
+    }
+  }
+  return null;
 }

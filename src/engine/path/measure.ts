@@ -11,12 +11,13 @@ const GL_W = [
   0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763,
 ];
 /** 每段弧长查找表的采样数:长度 → 参数的反查在相邻两个采样之间线性插值。 */
-const LUT_STEPS = 16;
+export const LUT_STEPS = 16;
 
 /** 一个三次段的 8 个坐标。 */
-type Cubic = readonly [number, number, number, number, number, number, number, number];
+export type Cubic = readonly [number, number, number, number, number, number, number, number];
 
-function segmentAt(sub: Subpath, k: number): Cubic {
+/** @internal 子路径第 k 段的 8 个坐标(笔速 pace.ts 也用)。 */
+export function segmentAt(sub: Subpath, k: number): Cubic {
   const p = sub.points;
   const i = 6 * k;
   return [
@@ -50,13 +51,15 @@ function arcLength(c: Cubic, t0: number, t1: number): number {
   return Number.isFinite(len) ? len : 0;
 }
 
-interface SegmentMeasure {
+/** @internal 一段的弧长表(笔速 pace.ts 也用)。 */
+export interface SegmentMeasure {
   length: number;
   /** 累计弧长,lut[j] 对应参数 j / LUT_STEPS。 */
   lut: Float64Array;
 }
 
-interface PathMeasure {
+/** @internal 整条路径的弧长表(笔速 pace.ts 也用)。 */
+export interface PathMeasure {
   total: number;
   /** 每条子路径的每一段。 */
   subpaths: Array<{ length: number; segments: SegmentMeasure[] }>;
@@ -72,6 +75,11 @@ function measureSegment(c: Cubic): SegmentMeasure {
     lut[j + 1] = acc;
   }
   return { length: acc, lut };
+}
+
+/** @internal 路径的弧长表(按路径对象缓存),与 partialPath 用的是同一份。 */
+export function measurePath(path: PathData): PathMeasure {
+  return measure(path);
 }
 
 function measure(path: PathData): PathMeasure {

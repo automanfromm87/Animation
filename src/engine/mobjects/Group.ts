@@ -1,3 +1,4 @@
+import type { RevealPace } from '../path/pace';
 import type { ResolvedStyle, StyleOverride, Theme } from '../theme/Theme';
 import { assignStyle } from '../theme/Theme';
 import { MObject, NO_STYLE, swapInheritedTint } from './MObject';
@@ -147,10 +148,12 @@ export class Group extends MObject {
     );
   }
 
-  override setRevealFraction(f: number | null): this {
+  override setRevealFraction(f: number | null, pace: RevealPace | null = null): this {
     this.revealFraction = f;
+    this.revealPace = pace;
+    // 笔速连同比例一起往下传:每个叶子按自己的形状换算(直线仍是匀速)。
     for (const child of this.children) {
-      child.setRevealFraction(f);
+      child.setRevealFraction(f, pace);
     }
     return this;
   }

@@ -3,15 +3,20 @@ import type { FilmController, FilmState } from './film/types';
 import { FilmError, OPUS_IN_MP4_NOTE } from './export/types';
 import {
   DEFAULT_SCENE,
+  ASPECT_IDS,
   SCENES,
+  aspectSearch,
   downloadName,
   exportAudioMessage,
   exportErrorMessage,
   fromFilm,
   isUserCancel,
+  previewSearch,
   progressPercent,
+  resolveAspect,
   resolvePreviewSeconds,
   resolveSceneId,
+  resolveStoryboardParam,
   supportedFormats,
 } from './sceneRegistry';
 import { equal, ok, suite } from './testing/harness';
@@ -44,6 +49,59 @@ export default suite('场景注册表', [
       equal(typeof SCENES.topology.preview, 'function');
       equal('preview' in SCENES.overview, false);
       equal('preview' in SCENES.pythagoras, false);
+    },
+  ],
+  [
+    '&storyboard 有这个参数(值可以为空)就进故事板模式,原文交给影片层解析;只有影片条目有故事板',
+    () => {
+      equal(resolveStoryboardParam('?scene=film&storyboard'), '');
+      equal(resolveStoryboardParam('?scene=film&storyboard='), '');
+      equal(resolveStoryboardParam('&storyboard=12'), '12');
+      equal(resolveStoryboardParam('?scene=film&storyboard=3,10.5'), '3,10.5');
+      equal(resolveStoryboardParam('?scene=film&storyboard=segments'), 'segments');
+      // URL 里的 + 解码成空格(时刻列表的分隔符之一)。
+      equal(resolveStoryboardParam('?storyboard=3+10.5'), '3 10.5');
+      equal(resolveStoryboardParam('?scene=film'), null);
+      equal(resolveStoryboardParam(''), null);
+      for (const id of ['film', 'derivatives', 'topology', 'voicedemo'] as const) {
+        equal(typeof SCENES[id].storyboard, 'function', id);
+      }
+      equal('storyboard' in SCENES.overview, false);
+      equal('storyboard' in SCENES.pythagoras, false);
+    },
+  ],
+  [
+    '缩略图点进单帧预览的查询串:去掉 storyboard、写上 preview,其余参数保留;非法秒数按 0',
+    () => {
+      equal(previewSearch('?scene=film&storyboard=3,5', 12.37), '?scene=film&preview=12.37');
+      equal(previewSearch('?scene=film&storyboard', 5.366666666666667), '?scene=film&preview=5.366667');
+      equal(previewSearch('?scene=film&storyboard=segments', -3), '?scene=film&preview=0');
+      equal(previewSearch('?scene=film&storyboard', Number.NaN), '?scene=film&preview=0');
+      equal(previewSearch('?scene=topology&x=1&storyboard=24&preview=9', 2), '?scene=topology&x=1&preview=2');
+      equal(resolvePreviewSeconds(previewSearch('?scene=film&storyboard', 42.5)), 42.5);
+      equal(resolveStoryboardParam(previewSearch('?scene=film&storyboard=3', 1)), null);
+      // 画幅跟着走:竖屏故事板点进去的单帧预览也是竖屏。
+      const fromPortrait = previewSearch('?scene=derivatives&storyboard=segments&aspect=w9h16', 5);
+      equal(fromPortrait, '?scene=derivatives&aspect=w9h16&preview=5');
+      equal(resolveAspect(fromPortrait), 'w9h16');
+    },
+  ],
+  [
+    '&aspect= 画幅:认得的四种原样取,没有 / 认不出按 full;写回地址时 full 删参数、其余参数保留',
+    () => {
+      for (const id of ASPECT_IDS) {
+        equal(resolveAspect(`?scene=film&aspect=${id}`), id);
+      }
+      equal(resolveAspect('?scene=film'), 'full');
+      equal(resolveAspect('?aspect=W9H16'), 'full');
+      equal(resolveAspect('?aspect=constructor'), 'full');
+      equal(resolveAspect(''), 'full');
+      equal(aspectSearch('?scene=film&storyboard', 'w9h16'), '?scene=film&storyboard=&aspect=w9h16');
+      equal(aspectSearch('?scene=film&aspect=w9h16&storyboard=24', 'w4h3'), '?scene=film&aspect=w4h3&storyboard=24');
+      equal(aspectSearch('?scene=film&aspect=w9h16', 'full'), '?scene=film');
+      equal(aspectSearch('?aspect=w9h16', 'full'), '');
+      equal(aspectSearch('', 'full'), '');
+      equal(aspectSearch('', 'w16h9'), '?aspect=w16h9');
     },
   ],
   [
@@ -89,6 +147,8 @@ export default suite('场景注册表', [
       const at = new Date(2026, 8, 23, 7, 5, 9);
       equal(downloadName('film', 'w16h9', 'video/mp4;codecs=avc1', at), 'film-w16h9-20260923-070509.mp4');
       equal(downloadName('derivatives', 'full', 'video/webm;codecs=vp9', at), 'derivatives-full-20260923-070509.webm');
+      // 故事板联系表是 PNG。
+      equal(downloadName('film', 'storyboard-w16h9', 'image/png', at), 'film-storyboard-w16h9-20260923-070509.png');
     },
   ],
   [

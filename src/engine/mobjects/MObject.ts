@@ -1,6 +1,7 @@
 import { colorAlpha, fadeColor, highlightColor, lerpColor } from '../color';
 import type { PathLayer } from '../path/draw';
 import { drawPath } from '../path/draw';
+import type { RevealPace } from '../path/pace';
 import type { PathData } from '../path/path';
 import type { ResolvedStyle, StyleOverride, Theme } from '../theme/Theme';
 import { assignStyle, resolveStyleInto } from '../theme/Theme';
@@ -127,6 +128,11 @@ export abstract class MObject {
    * 走 setRevealFraction 读写,Group 才能把它传给子元素。
    */
   protected revealFraction: number | null = null;
+  /**
+   * 生长期间的笔速(Create 的 pace 选项),null = 按弧长匀速。
+   * 与 revealFraction 一起由 setRevealFraction 写入:直接设比例的调用不会残留上一次 Create 的笔速。
+   */
+  protected revealPace: RevealPace | null = null;
   /** 自己 setStyle 设过的样式(最高优先级)。 */
   protected styleOverride: StyleOverride = {};
   /** 子类构造期的默认样式:低于容器继承,高于主题。 */
@@ -160,8 +166,19 @@ export abstract class MObject {
     return this.revealFraction;
   }
 
-  setRevealFraction(f: number | null): this {
+  /** 当前的笔速(Create 播放期间),null 为匀速。 */
+  getRevealPace(): RevealPace | null {
+    return this.revealPace;
+  }
+
+  /**
+   * 设置生长比例 f(笔的进度,不是弧长比例)。pace 是 Create 传下来的笔速,每次调用一并覆盖,
+   * 不传即匀速。按弧长描边的子类用 revealPartial(path, f, this.revealPace) 截取;
+   * 覆盖这个方法的容器要把 pace 连同 f 一起传给子元素(见 Group)。
+   */
+  setRevealFraction(f: number | null, pace: RevealPace | null = null): this {
     this.revealFraction = f;
+    this.revealPace = pace;
     return this;
   }
 

@@ -1,6 +1,8 @@
 import type { MObject } from '../mobjects/MObject';
 import type { Point } from '../mobjects/types';
 import { lerp } from '../mobjects/types';
+import type { PaceOptions, RevealPace } from '../path/pace';
+import { resolvePace } from '../path/pace';
 import type { AnimationOptions } from './Animation';
 import { Animation, BasePlayable } from './Animation';
 
@@ -123,12 +125,26 @@ function firstUnrevealable(m: MObject): MObject | null {
   return m;
 }
 
+/** Create 的选项:时长、缓动与笔速(pace: 'curvature' 弯处放慢、直处加快,总时长不变)。 */
+export interface CreateOptions extends AnimationOptions, PaceOptions {}
+
 /**
  * Create:描边生长(把图形画出来)。
  * 只支持 supportsReveal 的 MObject;Group 要求所有子元素都支持。
  * 检查放在 begin:构造时还空着、播放前才填满的 Group 也能用。
+ * 笔速只影响按弧长描出来的部分(多边形、曲线、函数图像、SVG 路径、公式字形的轮廓),
+ * 每个叶子按自己的形状换算(直线、圆、圆弧与匀速完全一样);椭圆按角度扫、尖端本来就慢,不变;
+ * 圆点长大、扇形扫开、箭头、文字逐字出现这类自有长法不受影响。
  */
 export class Create extends Animation {
+  /** 笔速(null 为按弧长匀速);构造时校验,选项写错在 new 的时候就报。 */
+  private readonly pace: RevealPace | null;
+
+  constructor(mobject: MObject, options?: CreateOptions) {
+    super(mobject, options);
+    this.pace = resolvePace('Create', options);
+  }
+
   override begin(): void {
     const bad = firstUnrevealable(this.mobject);
     if (bad) {
@@ -137,17 +153,22 @@ export class Create extends Animation {
         `Create 需要支持描边生长的对象:${what}(${bad.constructor.name})不支持`,
       );
     }
-    this.mobject.setRevealFraction(0);
+    this.mobject.setRevealFraction(0, this.pace);
   }
 
   override interpolate(alpha: number): void {
-    this.mobject.setRevealFraction(alpha);
+    this.mobject.setRevealFraction(alpha, this.pace);
   }
 
   override finish(): void {
     // 与基类契约一致按 rateFunc(1) 收尾:往返型缓动结束时应当回到「没画出来」。
+    // 停在半途时保留笔速,定格的画面与最后一帧一致;画完就连笔速一起撤掉。
     const a = this.rateFunc(1);
-    this.mobject.setRevealFraction(a >= 1 ? null : Math.max(0, a));
+    if (a >= 1) {
+      this.mobject.setRevealFraction(null);
+    } else {
+      this.mobject.setRevealFraction(Math.max(0, a), this.pace);
+    }
   }
 }
 

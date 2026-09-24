@@ -432,7 +432,10 @@ export class Tex extends MObject {
     }
   }
 
-  /** 生长中(Create):图元按排版顺序错峰,字形先描轮廓再填充,画布文字在自己的时段里淡入。 */
+  /**
+   * 生长中(Create):图元按排版顺序错峰,字形先描轮廓再填充,画布文字在自己的时段里淡入。
+   * 描轮廓的快慢跟随 Create 的笔速(每个字形各按自己的形状换算)。
+   */
   private drawRevealed(
     ctx: CanvasRenderingContext2D,
     layout: TexLayout,
@@ -455,7 +458,7 @@ export class Tex extends MObject {
         return;
       }
       const layer = layers[next++];
-      const step = layer ? writeStep(layer, u, OUTLINE_EM) : null;
+      const step = layer ? writeStep(layer, u, OUTLINE_EM, this.revealPace) : null;
       if (step) {
         drawPath(ctx, step.path, step.paint);
       }

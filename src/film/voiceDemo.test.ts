@@ -123,6 +123,46 @@ export default suite('配音演示片与影片目录', [
     },
   ],
   [
+    '演示片的台词稿:跟着台词伸缩的动画用 playUntil,提示点只记动画的最短时长;草稿时长不变;播放不告警',
+    async () => {
+      await withDom(async () => {
+        const { script, problems } = await buildVoiceScript('voice-demo', voiceDemoFilm, dryRun);
+        equal(problems.length, 0, formatProblems(problems));
+        const cues = (id: string): string =>
+          (script.segments.find((s) => s.id === id)?.cues ?? [])
+            .map((c) => `${c.line}${c.mark !== undefined ? `#${c.mark}` : ''}${c.end === true ? '$' : ''}`)
+            .join(' ');
+        equal(cues('secant-to-tangent'), 'secant-1 secant-1$ secant-2 secant-2#line secant-3 secant-3#tangent');
+        equal(cues('tangent-slope'), 'slope-1#k slope-1$ slope-2 slope-2#dx slope-3 slope-3$');
+        equal(cues('derivative'), 'derivative-1 derivative-1$ derivative-2#name derivative-2$');
+        const needs = (id: string, i: number): number => script.segments.find((s) => s.id === id)?.cues?.[i]?.needs ?? NaN;
+        close(needs('secant-to-tangent', 1), 1.6, 0.05, '坐标轴 1 秒 + 曲线至少 0.6 秒');
+        ok(needs('secant-to-tangent', 2) < 0.1, '第二句从第一句说完时量起(以前把拉长的曲线算进去,要 3.4 秒)');
+        close(needs('secant-to-tangent', 5), 1.3, 0.05, '「切线」之前:滑动至少 1 秒 + 提前 0.3 秒(以前按比例算,要 3.5 秒)');
+        ok(needs('derivative', 2) < 0.1, '「导数」之前不需要额外时间(以前把整句的滑动算进去,要 5.4 秒)');
+        for (const id of ['tangent-slope', 'derivative']) {
+          ok((script.segments.find((s) => s.id === id)?.tail ?? NaN) < 0.1, `「${id}」停在句尾上,没有按草稿速度算的尾巴`);
+        }
+        const durations = script.segments.map((s) => s.duration);
+        [14.8, 12.306, 10.644].forEach((d, i) =>
+          close(durations[i] ?? NaN, d, 0.05, `第 ${i + 1} 段草稿时长与改写前一致(差不过一帧):${durations[i]}`),
+        );
+        const warnings: string[] = [];
+        const { warn } = console;
+        console.warn = (...args: unknown[]): void => {
+          warnings.push(args.map(String).join(' '));
+        };
+        try {
+          const prepared = await prepareVoice(voiceDemoFilm, { dryRun, onProblem: () => undefined });
+          await audit(prepared.segments);
+        } finally {
+          console.warn = warn;
+        }
+        equal(warnings.length, 0, warnings.join(' | '));
+      });
+    },
+  ],
+  [
     '影片目录:每部都能加载;名字不对时列出可选的',
     async () => {
       equal(filmNames().join(','), 'film,derivatives,topology,voice-demo');

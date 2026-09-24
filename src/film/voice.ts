@@ -1,8 +1,8 @@
 import type { TaskYielder } from '../export/offlineEnv';
 import { messageChannelYielder } from '../export/offlineEnv';
 import { ManualClock } from './offline';
-import type { LineTiming, SegmentTiming, TimedSegment, TimingObserver } from './timed';
-import { estimateSpeech, isTimedSegment } from './timed';
+import type { LineTiming, SegmentTiming, SpanEvent, TimedSegment, TimingObserver } from './timed';
+import { estimateSpeech, isSpanShort, isTimedSegment } from './timed';
 import type { Segment, SegmentVoice, Subtitle, VoiceClip } from './types';
 import type { VoiceLineTiming, VoiceProblem, VoiceSegmentTiming, VoiceTimingSheet } from './voiceSheet';
 import { markNames, parseVoiceSheet, resolveAudioRef, stripMarks, textBeforeMark } from './voiceSheet';
@@ -99,24 +99,54 @@ export async function runSegmentToEnd(
   }
 }
 
+/** 草稿里的一个提示点:某句开口、句中某个标记,或(end)某句说完。 */
+export interface DraftCue {
+  readonly line: string;
+  readonly mark?: string;
+  /** 句尾提示点(playUntil / playThrough 到这句说完):这句说完不早于上一个提示点 + needs。 */
+  readonly end?: true;
+  /** 从上一个提示点(或段首)到这里动画至少要的秒数。 */
+  readonly needs: number;
+}
+
 /** 排草稿的结果:时间 + 每个提示点前动画至少要的时间(导出台词稿时给配音方参考)。 */
 export interface DraftResult {
   readonly timing: SegmentTiming;
-  /** 按脚本踩提示点的顺序:needs 是从上一个提示点(或段首)到这里动画至少要的秒数。 */
-  readonly cues: ReadonlyArray<{ readonly line: string; readonly mark?: string; readonly needs: number }>;
+  /**
+   * 按脚本踩提示点的顺序(untilLine / untilMark,以及 playUntil / playThrough 的目标;句尾 / 标记目标落在
+   * 还没踩到的句子上时,前面多一个那句的开口提示点:那句不早于调用时开口)。
+   * playUntil 的 needs 只算动画的 min + lead,跟着台词伸缩的那部分不算:配音快慢都成立。
+   */
+  readonly cues: readonly DraftCue[];
   /** 最后一个提示点之后动画还要的秒数。 */
   readonly tail: number;
+  /** 草稿里时间不够的 playUntil(目标已过,或剩的不到 min + lead):台词稿里报提醒。 */
+  readonly shortfalls: readonly SpanEvent[];
 }
 
 /** 干跑一个 timedSegment,按「尽早」规则排出草稿时间。跑不完或出错时抛出。 */
 export async function draftTiming(segment: TimedSegment, env: DryRunEnv): Promise<DraftResult> {
-  const cues: Array<{ line: string; mark?: string; needs: number }> = [];
+  const cues: DraftCue[] = [];
+  const shortfalls: SpanEvent[] = [];
   let lastResolved = 0;
   let tail = 0;
   const observer: TimingObserver = {
     cue: (e) => {
       cues.push({ line: e.line, ...(e.mark !== undefined ? { mark: e.mark } : {}), needs: Math.max(0, e.called - lastResolved) });
       lastResolved = Math.max(e.at, e.called);
+    },
+    span: (e) => {
+      // 从上一个提示点量到「动画最早能收住」:伸缩出来的时长不算进 needs。
+      cues.push({
+        line: e.line,
+        ...(e.mark !== undefined ? { mark: e.mark } : {}),
+        ...(e.kind === 'end' ? { end: true as const } : {}),
+        needs: Math.max(0, e.ready - lastResolved),
+      });
+      lastResolved = Math.max(e.at, e.from + e.runTime);
+      if (isSpanShort(e)) {
+        shortfalls.push(e);
+      }
     },
     end: (e) => {
       tail = Math.max(0, e.called - lastResolved);
@@ -131,7 +161,7 @@ export async function draftTiming(segment: TimedSegment, env: DryRunEnv): Promis
   if (!run.settled || !timing) {
     throw new Error(`分段「${segment.name}」干跑 ${run.elapsed.toFixed(1)} 秒还没结束`);
   }
-  return { timing, cues, tail };
+  return { timing, cues, tail, shortfalls };
 }
 
 export interface PrepareVoiceOptions {

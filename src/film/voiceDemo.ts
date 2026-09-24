@@ -22,7 +22,8 @@ import { timedSegment } from './timed';
 import type { Segment } from './types';
 
 /**
- * 配音演示片《导数就是切线的斜率》:三段 timedSegment,台词带 <mark>,脚本只踩提示点、不写秒数。
+ * 配音演示片《导数就是切线的斜率》:三段 timedSegment,台词带 <mark>,脚本只踩提示点、不写秒数;
+ * 跟着台词伸缩的动画用 playUntil / playThrough 写「在哪儿收住」,时长由引擎按目标算。
  * 没有配音时间表时按草稿时间播(没有声音);public/voice/voice-demo/timing.json 到位后
  * 时长、字幕、声音全按时间表来(`npm run voice:demo` 用 macOS 语音合成生成一份)。
  */
@@ -70,7 +71,7 @@ const secantToTangent = timedSegment(
 
     await env.untilLine('secant-1');
     await env.play(new Create(axes, { runTime: 1 }));
-    await env.play(new Create(graph, { runTime: Math.max(0.6, env.remaining('secant-1')) }));
+    await env.playUntil({ end: 'secant-1', min: 0.6 }, new Create(graph)); // 曲线画到这句说完
 
     await env.untilLine('secant-2');
     await env.play(new FadeIn(p, { runTime: 0.4 }), new FadeIn(q, { runTime: 0.4 }));
@@ -78,19 +79,18 @@ const secantToTangent = timedSegment(
     await env.play(new FadeIn(secant, { runTime: 0.6 }));
 
     await env.untilLine('secant-3');
-    // 右边的点沿曲线滑向左边的点,割线跟着转:在「切线」这个词之前滑到位。
-    // 用这句剩余时间的一个比例(而不是「句尾减常数」):配音变长时,动画跟着按比例变长,仍在那个词之前结束。
+    // 右边的点沿曲线滑向左边的点,割线跟着转:在「切线」这个词之前 0.3 秒滑到位(至少滑 1 秒)。
     const stop = env.scene.addUpdater(() => {
       const x2 = tracker.getValue();
       secant.setX(x1, x2);
       q.moveTo(axes.toLocal(x2, f(x2)));
     });
     try {
-      await env.play(new TweenValue(tracker, x1 + 0.02, { runTime: Math.max(1, env.remaining('secant-3') * 0.6) }));
+      await env.playUntil({ line: 'secant-3', mark: 'tangent', lead: 0.3 }, new TweenValue(tracker, x1 + 0.02));
     } finally {
       stop();
     }
-    await env.untilMark('secant-3', 'tangent');
+    // playUntil 返回时正好说到「切线」。
     await env.play(
       new FadeOut(secant, { runTime: 0.4 }),
       new FadeOut(q, { runTime: 0.4 }),
@@ -131,7 +131,7 @@ const tangentSlope = timedSegment(
 
     await env.untilMark('slope-1', 'k');
     formula.opacity = 1;
-    await env.play(new Write(formula, { runTime: Math.max(0.8, env.remaining('slope-1')) }));
+    await env.playUntil({ end: 'slope-1', min: 0.8 }, new Write(formula));
 
     await env.untilLine('slope-2');
     await env.play(new Create(dy, { runTime: 0.8 }), new Indicate(formula, { part: 'dy', runTime: 0.8 }));
@@ -140,7 +140,8 @@ const tangentSlope = timedSegment(
 
     await env.untilLine('slope-3');
     await env.play(new FadeIn(answer, { runTime: 0.8 }));
-    await env.play(new Indicate(answer, { runTime: Math.max(0.6, env.remaining('slope-3')) }));
+    // 强调约 1 秒(最多 1.2 秒),然后静止到这句说完。
+    await env.playUntil({ end: 'slope-3', min: 0.6, max: 1.2 }, new Indicate(answer));
   },
 );
 
@@ -170,8 +171,7 @@ const derivative = timedSegment(
     env.scene.add(plot, readout, result);
     env.scene.fitObjects([plot, readout, result], 40);
 
-    await env.untilLine('derivative-1');
-    // 切点沿曲线滑过去,读数跟着变:整句话说多久就滑多久。
+    // 切点沿曲线滑过去,读数跟着变:整句话说多久就滑多久(至少 1 秒)。
     const stop = env.scene.addUpdater(() => {
       const x = tracker.getValue();
       tangent.setX(x);
@@ -179,7 +179,7 @@ const derivative = timedSegment(
       readout.setText(`斜率 ${(2 * x).toFixed(2)}`);
     });
     try {
-      await env.play(new TweenValue(tracker, 2.2, { runTime: Math.max(1, env.remaining('derivative-1')) }));
+      await env.playThrough('derivative-1', new TweenValue(tracker, 2.2));
     } finally {
       stop();
     }
@@ -187,7 +187,7 @@ const derivative = timedSegment(
     await env.untilMark('derivative-2', 'name');
     result.opacity = 1;
     await env.play(new Write(result, { runTime: 1 }));
-    await env.play(new Indicate(result, { runTime: Math.max(0.6, env.remaining('derivative-2')) }));
+    await env.playUntil({ end: 'derivative-2', min: 0.6, max: 1.2 }, new Indicate(result));
   },
 );
 

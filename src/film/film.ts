@@ -63,7 +63,43 @@ export { diagnoseRecorderStall } from '../export/watchdog';
 export { filmDuration, segmentAtTime, segmentIndexAt, segmentTicks, subtitleAt } from './timeline';
 export type { SegmentAtTime } from './timeline';
 export type { FastForwardOptions, FastForwardResult, PreviewOptions, PreviewResult } from './preview';
-export { fastForwardTo, previewFrameAt } from './preview';
+export { fastForwardTo, previewFrameAt, waitForWebFonts } from './preview';
+export type {
+  ParsedStoryboardSpec,
+  SheetLayout,
+  StoryboardCaption,
+  StoryboardCaptionExtra,
+  StoryboardFrame,
+  StoryboardFrameRole,
+  StoryboardPlan,
+  StoryboardPlanOptions,
+  StoryboardSpec,
+} from './storyboard';
+export {
+  DEFAULT_STORYBOARD_COUNT,
+  MAX_STORYBOARD_FRAMES,
+  formatFilmTime,
+  parseStoryboardSpec,
+  parseStoryboardTime,
+  planStoryboard,
+  storyboardCaption,
+} from './storyboard';
+export type {
+  RenderStoryboardInit,
+  RenderStoryboardResult,
+  SheetEntry,
+  StoryboardBox,
+  StoryboardFilmOptions,
+  StoryboardFrameResult,
+  StoryboardOverlay,
+  StoryboardOverlayContext,
+  StoryboardOverlayResult,
+  StoryboardSheetOptions,
+  StoryboardVisuals,
+} from './storyboardRender';
+export { composeStoryboardSheet, renderStoryboard, resolveStoryboardVisuals } from './storyboardRender';
+export type { StoryboardView, StoryboardViewEnv, StoryboardViewInit } from './storyboardView';
+export { mountStoryboard } from './storyboardView';
 export type { CardBuild, CardSegmentOptions, DirectedSegmentOptions, SegmentEnv } from './segments';
 export {
   CARD_INTRO_SECONDS,
@@ -77,14 +113,19 @@ export type {
   CueEvent,
   LineTiming,
   SegmentTiming,
+  SpanEvent,
+  SpanOptions,
+  ThroughSpec,
   TimedEnv,
   TimedLine,
   TimedSegment,
   TimedSegmentOptions,
+  TimedTarget,
   TimingObserver,
+  UntilSpec,
 } from './timed';
 export { estimateSpeech, isTimedSegment, timedSegment } from './timed';
-export type { DraftResult, DryRunEnv, DryRunResult, PrepareVoiceOptions, PreparedFilm } from './voice';
+export type { DraftCue, DraftResult, DryRunEnv, DryRunResult, PrepareVoiceOptions, PreparedFilm } from './voice';
 export { draftTiming, prepareVoice, runSegmentToEnd, voiceIdOf, voiceLineIdOf } from './voice';
 export type {
   AudioRef,
