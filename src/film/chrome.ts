@@ -1,7 +1,7 @@
-import type { SubtitleVisual } from '../export/composite';
+import type { ProgressVisual, SubtitleVisual } from '../export/composite';
 import type { FilmPlan } from './timeline';
-import { chapterNumeral, nextChapterIndex, segmentIndexAt, segmentTicks } from './timeline';
-import type { ProgressStyle, Segment } from './types';
+import { nextChapterIndex, segmentIndexAt } from './timeline';
+import type { Segment } from './types';
 
 /** 播放器覆盖层的层级(公式已画进 canvas,不占层级)。 */
 const Z_VEIL = 1;
@@ -45,6 +45,13 @@ export interface FilmChrome {
   setSeekEnabled(enabled: boolean): void;
   /** 字幕实际使用的字体(DOM 继承来的计算值),导出合成要用同一个;无 DOM 时为 null。 */
   readonly fontFamily: string | null;
+  /** 进度条章名实际使用的字体(同上);没有进度条或无 DOM 时为 null。 */
+  readonly labelFontFamily: string | null;
+  /**
+   * 进度条填充色与轨道色的计算值(浏览器解析过的,比如 var(--brand) 已经换成 rgb):画布认不得 CSS 变量,
+   * 导出合成要用这个;没有进度条、无 DOM 或拿不到时为 null(导出照用样式里的原值)。
+   */
+  readonly progressColors: { readonly color: string; readonly background: string } | null;
   dispose(): void;
 }
 
@@ -54,6 +61,8 @@ export const NULL_CHROME: FilmChrome = {
   relayout: () => undefined,
   setSeekEnabled: () => undefined,
   fontFamily: null,
+  labelFontFamily: null,
+  progressColors: null,
   dispose: () => undefined,
 };
 
@@ -63,8 +72,8 @@ export interface DomChromeOptions {
   plan: FilmPlan;
   veilColor: string;
   visual: SubtitleVisual;
-  labelPx: number;
-  progressStyle?: ProgressStyle;
+  /** 进度条样式(与导出合成共用);null 表示不显示进度条。 */
+  progress: ProgressVisual | null;
   /** 显式指定了字体时写到字幕条上;否则继承页面字体。 */
   explicitFontFamily: boolean;
   callbacks: ChromeCallbacks;
@@ -140,19 +149,20 @@ export function createDomChrome(o: DomChromeOptions): FilmChrome {
   const labels: HTMLElement[] = [];
   let seekEnabled = true;
   let current = 0;
-  const pos = o.progressStyle?.position ?? 'bottom';
+  let labelFontFamily: string | null = null;
+  let progressColors: FilmChrome['progressColors'] = null;
+  const pv = o.progress;
+  const pos = pv?.position ?? 'bottom';
   const tipOffset = (): number =>
     pos === 'bottom'
       ? Math.round(visual.bottomPx + visual.fontPx * visual.lineHeight + visual.padY * 2 + 8)
-      : plan.barBlockPx + 4;
+      : (pv?.blockPx ?? 0) + 4;
 
-  if (plan.progressOn) {
-    const h = o.progressStyle?.height ?? 3;
-    const ink = o.progressStyle?.color ?? '#1a1a1a';
+  if (pv) {
     const b = make('div');
     bar = b;
     b.style.cssText =
-      `position:absolute;left:0;right:0;${pos}:0;height:${plan.barBlockPx}px;` +
+      `position:absolute;left:0;right:0;${pos}:0;height:${pv.blockPx}px;` +
       `cursor:pointer;z-index:${Z_PROGRESS};`;
     // 键盘与读屏可达:进度条是一个可聚焦的 slider,方向键切段。
     b.tabIndex = 0;
@@ -250,38 +260,43 @@ export function createDomChrome(o: DomChromeOptions): FilmChrome {
     b.addEventListener('pointercancel', hideTip);
     const track = make('div');
     track.style.cssText =
-      `position:absolute;left:0;right:0;${pos}:0;height:${h}px;` +
-      `background:${o.progressStyle?.background ?? 'rgba(0,0,0,0.12)'};`;
+      `position:absolute;left:0;right:0;${pos}:0;height:${pv.trackPx}px;` +
+      `background:${pv.background};`;
     const f = make('div');
     fill = f;
     f.style.cssText =
-      `position:absolute;left:0;${pos}:0;height:${h}px;width:0%;background:${ink};`;
+      `position:absolute;left:0;${pos}:0;height:${pv.trackPx}px;width:0%;background:${pv.color};`;
     b.appendChild(track);
     b.appendChild(f);
-    const ticks = segmentTicks(segments);
-    let chapterNo = 0;
-    segments.forEach((s, i) => {
-      const frac = (ticks[i] ?? 0) * 100;
-      const isChapter = s.marker === 'chapter';
+    for (const spec of pv.ticks) {
+      const frac = (spec.frac * 100).toFixed(3);
       const tick = make('div');
       tick.style.cssText =
-        `position:absolute;${pos}:0;left:${frac.toFixed(3)}%;width:2px;` +
-        `height:${isChapter ? 14 : 8}px;` +
-        `background:${isChapter ? ink : 'rgba(0,0,0,0.35)'};`;
+        `position:absolute;${pos}:0;left:${frac}%;width:${pv.tickWidthPx}px;` +
+        `height:${spec.chapter ? pv.chapterTickPx : pv.tickPx}px;` +
+        `background:${spec.chapter ? pv.color : pv.tickColor};`;
       b.appendChild(tick);
-      if (s.chapter !== undefined) {
+      if (spec.label !== null) {
         const label = make('div');
-        label.textContent = `${chapterNumeral(chapterNo)} · ${s.chapter}`;
-        chapterNo += 1;
+        label.textContent = spec.label;
         label.style.cssText =
-          `position:absolute;${pos}:20px;left:calc(${frac.toFixed(3)}% + 6px);` +
-          `font-size:${o.labelPx}px;line-height:1;white-space:nowrap;` +
-          'color:rgba(0,0,0,0.55);';
+          `position:absolute;${pos}:${pv.labelOffsetPx}px;left:calc(${frac}% + ${pv.labelGapPx}px);` +
+          `font-size:${pv.labelPx}px;line-height:1;white-space:nowrap;` +
+          `color:${pv.labelColor};`;
         b.appendChild(label);
         labels.push(label);
       }
-    });
+    }
     parent.appendChild(b);
+    // 章名继承页面字体(不跟字幕的显式字体走):导出合成要用它实际拿到的那个。
+    const computed = (el: HTMLElement, key: 'fontFamily' | 'backgroundColor'): string | null => {
+      const v: unknown = getComputedStyle(el)[key];
+      return typeof v === 'string' && v !== '' ? v : null;
+    };
+    labelFontFamily = computed(labels[0] ?? b, 'fontFamily');
+    const color = computed(f, 'backgroundColor');
+    const background = computed(track, 'backgroundColor');
+    progressColors = color !== null && background !== null ? { color, background } : null;
   }
 
   // 只在值变化时写 DOM:这条路径每帧都走。
@@ -339,6 +354,8 @@ export function createDomChrome(o: DomChromeOptions): FilmChrome {
       }
     },
     fontFamily,
+    labelFontFamily,
+    progressColors,
     dispose(): void {
       for (const el of created) {
         el.remove();

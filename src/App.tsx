@@ -5,6 +5,7 @@ import type { ExportHandle } from './export/types';
 import {
   SCENES,
   downloadName,
+  exportAudioMessage,
   exportErrorMessage,
   isUserCancel,
   progressPercent,
@@ -79,6 +80,8 @@ function App() {
   /** 这次导出的方式:离线渲染不占用预览,实时录制要独占预览(锁住暂停与画幅)。 */
   const [exportMode, setExportMode] = useState<ExportHandle['mode'] | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  /** 导出完成后要用户看一眼的提示(比如成片没带上配音、为什么)。 */
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   /** 给读屏的导出状态播报(开始、每 10%、完成、取消)。 */
   const [exportStatus, setExportStatus] = useState('');
   const announcedRef = useRef(-1);
@@ -225,17 +228,33 @@ function App() {
     // 离线渲染期间预览可以照常换画幅,成片仍是开始时的画幅:文件名按开始时的起。
     const exportAspect = aspect;
     setExportError(null);
+    setExportNotice(null);
     setExportPct(0);
     announcedRef.current = 0;
+    /** 开始时的导出方式;离线中途改走实时录制时提示一次。 */
+    let startMode: ExportHandle['mode'] | null = null;
+    let switched = false;
+    // 实时录制会让播放器自己打开声音(把配音录进去),失败/取消时声音也可能已经开了:按钮按播放器的实际状态对齐。
+    const syncAudioOn = (): void => {
+      const on = handleRef.current?.audioEnabled?.();
+      if (on !== undefined) {
+        setAudioOn(on);
+      }
+    };
     // 实时录制时播放器会自己恢复播放并通过 onPausedChange 同步按钮,这里不必手动取消暂停。
     const handle = exportVideo({
       mimeType: exportFormat === 'auto' ? undefined : exportFormat,
       onProgress: (done, total) => {
         const pct = progressPercent(done, total);
         setExportPct(pct);
-        // auto 模式编码器编不了时会改走实时录制:方式以句柄当下报告的为准。
+        // auto 模式编码器编不了(或带不上配音)时会改走实时录制:方式以句柄当下报告的为准。
         const mode = exportRef.current?.mode ?? null;
         setExportMode(mode);
+        if (mode === 'realtime' && startMode === 'offline' && !switched) {
+          switched = true;
+          syncAudioOn();
+          setExportStatus('改为实时录制:全片会实时播放一遍,请保持页面在前台');
+        }
         const bucket = Math.floor(pct / 10) * 10;
         if (bucket > announcedRef.current) {
           announcedRef.current = bucket;
@@ -244,11 +263,9 @@ function App() {
       },
     });
     exportRef.current = handle;
+    startMode = handle.mode;
     setExportMode(handle.mode);
-    // 实时录制跟着播放录一遍,播放器会顺便打开声音(把配音录进去):按钮状态跟上。
-    if (handle.mode === 'realtime' && audioAvailable) {
-      setAudioOn(true);
-    }
+    syncAudioOn();
     // 离线是逐帧渲染(快慢与播放无关、可切到后台),实时是跟着播放录一遍。
     setExportStatus(handle.mode === 'offline' ? '开始渲染视频' : '开始导出');
     handle.done
@@ -261,8 +278,12 @@ function App() {
           exportRef.current = null;
           setExportPct(null);
           setExportMode(null);
+          syncAudioOn();
           triggerDownload(blob, downloadName(sceneId, exportAspect, blob.type));
-          setExportStatus('导出完成,已开始下载');
+          const message = exportAudioMessage(handle.audio);
+          // 读屏只听常驻的播报区:原因一并在那里播报,可见提示不再另设 live region(新插入的播报区不一定被读)。
+          setExportStatus(message.announce);
+          setExportNotice(message.notice);
         },
         (err: unknown) => {
           if (exportRef.current !== handle) {
@@ -271,6 +292,7 @@ function App() {
           exportRef.current = null;
           setExportPct(null);
           setExportMode(null);
+          syncAudioOn();
           if (isUserCancel(err)) {
             setExportStatus('导出已取消');
           } else {
@@ -404,6 +426,15 @@ function App() {
             </div>
           )}
         </div>
+        {exportNotice !== null && (
+          <div className="export-notice">
+            {/* 只是可见提示:读屏已经从下面常驻的播报区听到同一段话。 */}
+            <span>{exportNotice}</span>
+            <button type="button" aria-label="关闭提示" onClick={() => setExportNotice(null)}>
+              ×
+            </button>
+          </div>
+        )}
         {(exportError ?? loadError) !== null && (
           <div className="export-error" role="alert">
             <span>{exportError ?? loadError}</span>

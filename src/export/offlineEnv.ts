@@ -63,7 +63,7 @@ export interface OfflineEnv {
   createYielder(): TaskYielder;
   /**
    * 取配音文件并按导出采样率(EXPORT_AUDIO_SAMPLE_RATE)解码。
-   * 没有就混不了配音:成片无声,导出照常。
+   * 没有就混不了配音:auto 模式改走实时录制(录得进时),否则照常出片、配音报告为 dropped。
    */
   readonly audio?: AudioLoader;
 }

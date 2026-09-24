@@ -160,6 +160,7 @@ export const BENCHMARKS: Benchmark[] = [
           text: '导数就是变化率:这一点切线的斜率,也是这一点函数值随自变量变化的快慢',
           visual: SUBTITLE_VISUAL,
         },
+        progress: null,
       };
       return () => {
         for (let i = 0; i < 20; i++) {

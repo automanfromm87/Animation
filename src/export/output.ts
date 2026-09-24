@@ -8,11 +8,16 @@ const AUTO_MIME_CANDIDATES = [
   'video/webm',
 ] as const;
 
+/** MP4 + H.264 + AAC:macOS 的 QuickTime / 访达预览也放得出声音。 */
+const MP4_WITH_AAC = 'video/mp4;codecs=avc1,mp4a.40.2';
+
 /**
- * 带配音时的候选:WebM 显式写上 Opus —— 只写视频编码的类型串遇上带音轨的流,
- * 有的浏览器会拒绝或丢掉声音。mp4 让浏览器自己配音频编码。
+ * 带配音时的候选:MP4 先钉死 AAC —— 只写 'video/mp4' 时音频编码由浏览器挑,可能是 Opus,
+ * macOS 自带的播放器放不出声音;钉不住(浏览器不认)再退回让浏览器自己配。
+ * WebM 显式写上 Opus —— 只写视频编码的类型串遇上带音轨的流,有的浏览器会拒绝或丢掉声音。
  */
 const AUTO_MIME_CANDIDATES_WITH_AUDIO = [
+  MP4_WITH_AAC,
   'video/mp4',
   'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
@@ -37,6 +42,10 @@ export function pickMimeType(
     }
   };
   if (want !== undefined && want !== '') {
+    // 界面上选的是裸的 MP4:带配音时同样先试钉死 AAC 的写法(容器没变,用户拿到的仍是 MP4)。
+    if (options?.audio && want.trim().toLowerCase() === 'video/mp4' && supported(MP4_WITH_AAC)) {
+      return { mimeType: MP4_WITH_AAC, error: null };
+    }
     return supported(want)
       ? { mimeType: want, error: null }
       : { mimeType: '', error: 'unsupported-mime' };
@@ -47,6 +56,21 @@ export function pickMimeType(
     }
   }
   return { mimeType: '', error: 'unsupported' };
+}
+
+/** 类型串里的音频编码('video/mp4;codecs=avc1,mp4a.40.2' -> 'aac');没写 codecs 或认不出时为 undefined。 */
+export function audioCodecOf(mimeType: string): string | undefined {
+  const codecs = /codecs\s*=\s*"?([^";]*)/i.exec(mimeType)?.[1]?.toLowerCase() ?? '';
+  if (/(^|,)\s*(mp4a|aac)/.test(codecs)) {
+    return 'aac';
+  }
+  if (/(^|,)\s*opus/.test(codecs)) {
+    return 'opus';
+  }
+  if (/(^|,)\s*vorbis/.test(codecs)) {
+    return 'vorbis';
+  }
+  return undefined;
 }
 
 /** 默认导出长边(像素)。 */

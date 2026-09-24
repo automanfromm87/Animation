@@ -2,6 +2,7 @@ import { equal, ok, suite } from '../testing/harness';
 import {
   COMPOSITE_MIN_INTERVAL_MS,
   MIN_EXPORT_FRAMES,
+  audioCodecOf,
   exportGeometry,
   exportSize,
   pickMimeType,
@@ -86,9 +87,12 @@ export default suite('导出输出', [
     },
   ],
   [
-    '带配音时自动候选改成带 Opus 的 WebM(mp4 仍然优先);显式指定的格式不受影响',
+    '带配音时自动候选:MP4 钉死 AAC(不认就退回裸 MP4),WebM 带 Opus;显式指定的格式不受影响',
     () => {
-      equal(pickMimeType(undefined, () => true, { audio: true }).mimeType, 'video/mp4');
+      equal(pickMimeType(undefined, () => true, { audio: true }).mimeType, 'video/mp4;codecs=avc1,mp4a.40.2');
+      const bareMp4 = (t: string): boolean => t === 'video/mp4' || t.startsWith('video/webm');
+      equal(pickMimeType(undefined, bareMp4, { audio: true }).mimeType, 'video/mp4', '钉不住 AAC 时退回裸 MP4');
+      equal(pickMimeType(undefined, () => true).mimeType, 'video/mp4', '不带配音时仍是裸 MP4');
       const webmOnly = (t: string): boolean => t.startsWith('video/webm');
       equal(pickMimeType(undefined, webmOnly, { audio: true }).mimeType, 'video/webm;codecs=vp9,opus');
       equal(pickMimeType(undefined, webmOnly).mimeType, 'video/webm;codecs=vp9', '不带配音时候选不变');
@@ -97,6 +101,28 @@ export default suite('导出输出', [
       equal(pickMimeType(undefined, (t) => t === 'video/webm', { audio: true }).mimeType, 'video/webm');
       equal(pickMimeType('video/webm', () => true, { audio: true }).mimeType, 'video/webm', '显式格式原样用');
       equal(pickMimeType('video/webm', () => false, { audio: true }).error, 'unsupported-mime');
+    },
+  ],
+  [
+    '界面选了裸 MP4 且带配音:先试钉死 AAC,不认就原样用;带 codecs 的显式格式不改;不带配音不改',
+    () => {
+      equal(pickMimeType('video/mp4', () => true, { audio: true }).mimeType, 'video/mp4;codecs=avc1,mp4a.40.2');
+      equal(pickMimeType('video/mp4', (t) => t === 'video/mp4', { audio: true }).mimeType, 'video/mp4');
+      equal(pickMimeType('video/mp4', () => false, { audio: true }).error, 'unsupported-mime');
+      equal(pickMimeType('video/mp4;codecs=avc1,opus', () => true, { audio: true }).mimeType, 'video/mp4;codecs=avc1,opus');
+      equal(pickMimeType('video/mp4', () => true).mimeType, 'video/mp4');
+    },
+  ],
+  [
+    'audioCodecOf:从类型串认出音频编码',
+    () => {
+      equal(audioCodecOf('video/mp4;codecs=avc1.64001f,mp4a.40.2'), 'aac');
+      equal(audioCodecOf('video/mp4; codecs="avc1, mp4a.40.2"'), 'aac');
+      equal(audioCodecOf('video/webm;codecs=vp9,opus'), 'opus');
+      equal(audioCodecOf('video/mp4;codecs=avc1,opus'), 'opus');
+      equal(audioCodecOf('video/webm;codecs=vp8,vorbis'), 'vorbis');
+      equal(audioCodecOf('video/mp4'), undefined);
+      equal(audioCodecOf('video/webm;codecs=vp9'), undefined);
     },
   ],
 ]);

@@ -1,9 +1,10 @@
 import { browserClock, lightTheme } from '../engine';
 import { browserOfflineEnv } from '../export/offlineEnv';
-import { ExportRecorder } from '../export/recorder';
+import { ExportRecorder, browserRecorderEnv } from '../export/recorder';
 import type { RecorderFrame } from '../export/recorder';
-import type { ExportHandle, ExportOptions } from '../export/types';
-import { FilmError, describeError, isFilmError } from '../export/types';
+import { audioCodecOf, pickMimeType } from '../export/output';
+import type { ExportAudioReport, ExportHandle, ExportOptions } from '../export/types';
+import { FilmError, describeError, isFilmError, withPlaybackNote } from '../export/types';
 import type { ChromeState, FilmChrome } from './chrome';
 import { NULL_CHROME, createDomChrome } from './chrome';
 import { FilmDriver } from './driver';
@@ -12,7 +13,9 @@ import { ManualClock, exportFilmOffline } from './offline';
 import { fastForwardTo } from './preview';
 import {
   planFilm,
+  progressFraction,
   progressLabelPx,
+  resolveProgressVisual,
   resolveSubtitleVisual,
   segmentAtTime,
   subtitleAt,
@@ -46,7 +49,14 @@ export type {
   SubtitleStyle,
   VoiceClip,
 } from './types';
-export type { ExportHandle, ExportMode, ExportOptions, FilmErrorCode } from '../export/types';
+export type {
+  ExportAudioReport,
+  ExportAudioStatus,
+  ExportHandle,
+  ExportMode,
+  ExportOptions,
+  FilmErrorCode,
+} from '../export/types';
 export { FilmError, isFilmError } from '../export/types';
 export type { RecorderHealth, StallDiagnosis } from '../export/watchdog';
 export { diagnoseRecorderStall } from '../export/watchdog';
@@ -90,7 +100,7 @@ function failedExport(error: FilmError): ExportHandle {
   const done = Promise.reject(error);
   // 调用方可能根本不看 done(比如只关心 cancel),别让它变成未处理拒绝。
   done.catch(() => undefined);
-  return { done, mimeType: '', mode: 'realtime', cancel: () => undefined };
+  return { done, mimeType: '', mode: 'realtime', audio: { status: 'none' }, cancel: () => undefined };
 }
 
 /** 调用宿主回调:抛错只记日志,不能拖垮播放器。 */
@@ -146,7 +156,8 @@ export function runFilm(
   const showSubtitles = options?.subtitles !== false;
   const veil = new Veil(1);
   // 配音:分段挂了音频才有;没有 Web Audio 的环境照常播,只是没声音。
-  const audioEnv = filmHasVoice(segments) ? (options?.audio?.env ?? browserLiveAudioEnv()) : null;
+  const hasVoice = filmHasVoice(segments);
+  const audioEnv = hasVoice ? (options?.audio?.env ?? browserLiveAudioEnv()) : null;
   const voice = audioEnv ? new VoicePlayback(audioEnv) : null;
   let disposed = false;
   let recorder: ExportRecorder | null = null;
@@ -175,6 +186,14 @@ export function runFilm(
   let builtNarrow: boolean | null = narrowNow();
 
   let visual = resolveSubtitleVisual(viewport.width, options?.subtitleStyle, plan, 'sans-serif');
+  /** 进度条样式:DOM 进度条与导出合成共用(没开进度条时为 null)。 */
+  let progressVisual = resolveProgressVisual(
+    segments,
+    options?.progressStyle,
+    plan,
+    viewport.width,
+    'sans-serif',
+  );
   const parent = canvas.parentElement;
   let chrome: FilmChrome = NULL_CHROME;
   if (parent && typeof document !== 'undefined') {
@@ -184,8 +203,7 @@ export function runFilm(
       plan,
       veilColor,
       visual,
-      labelPx: progressLabelPx(viewport.width),
-      ...(options?.progressStyle ? { progressStyle: options.progressStyle } : {}),
+      progress: progressVisual,
       explicitFontFamily: options?.subtitleStyle?.fontFamily !== undefined,
       callbacks: {
         seek: (target) => {
@@ -202,6 +220,14 @@ export function runFilm(
     // 导出合成用字幕条实际继承到的字体,成片与预览才是同一套字。
     if (chrome.fontFamily !== null && options?.subtitleStyle?.fontFamily === undefined) {
       visual = { ...visual, fontFamily: chrome.fontFamily };
+    }
+    if (progressVisual) {
+      // 导出合成用 DOM 进度条实际拿到的字体与颜色(CSS 变量、继承来的字体画布都解析不了)。
+      progressVisual = {
+        ...progressVisual,
+        ...(chrome.labelFontFamily !== null ? { labelFontFamily: chrome.labelFontFamily } : {}),
+        ...(chrome.progressColors ?? {}),
+      };
     }
   }
 
@@ -348,7 +374,7 @@ export function runFilm(
     return {
       veilAlpha: veil.alpha,
       subtitle: subtitleAt(subs, elapsed),
-      progress: plan.total > 0 ? Math.min(1, (driver.completed + elapsed) / plan.total) : 0,
+      progress: progressFraction(driver.position(), plan.total),
       index: driver.index,
     };
   };
@@ -363,6 +389,8 @@ export function runFilm(
   const recorderFrame = (state: ChromeState): RecorderFrame => ({
     veilAlpha: state.veilAlpha,
     subtitle: state.subtitle === '' ? null : { text: state.subtitle, visual },
+    // 与这一帧交给 chrome.render 的是同一个数:成片里的填充和预览不会差一截。
+    progress: progressVisual ? { value: state.progress, visual: progressVisual } : null,
     position: driver.position(),
   });
   // 播着、转场中、或者在导出时才需要逐帧跑;暂停时停下(转场也冻结着,白闪自己记得暂停起点),
@@ -431,7 +459,11 @@ export function runFilm(
         ...resolveSubtitleVisual(viewport.width, options?.subtitleStyle, plan, visual.fontFamily),
         fontFamily: visual.fontFamily,
       };
-      chrome.relayout(visual, progressLabelPx(viewport.width));
+      const labelPx = progressLabelPx(viewport.width);
+      if (progressVisual) {
+        progressVisual = { ...progressVisual, labelPx };
+      }
+      chrome.relayout(visual, labelPx);
       // 当前段重设分辨率 + 重取景 + 按新字号更新字幕安全区。
       driver.resizeCurrent();
       checkOrientation();
@@ -449,8 +481,9 @@ export function runFilm(
       return failedExport(new FilmError('busy', '已经在导出了'));
     }
     let rec: ExportRecorder;
+    const wantVoice = hasVoice && exportOptions?.audio !== false;
     // 成片带配音:把播放器的声音接进录制的媒体流(导出按钮的点击就是用户操作,顺便开声音)。
-    const audioTrack = voice && exportOptions?.audio !== false ? voice.captureTrack() : null;
+    const audioTrack = voice && wantVoice ? voice.captureTrack() : null;
     try {
       rec = ExportRecorder.create({
         main: canvas,
@@ -481,12 +514,76 @@ export function runFilm(
         },
       });
     } catch (e) {
+      // 音轨已经接出来了:录制没建成就断开,不然录制节点一直挂着。
+      voice?.releaseCapture();
       return failedExport(
         isFilmError(e)
           ? e
           : new FilmError('init', `导出初始化失败:${describeError(e)}`, describeError(e)),
       );
     }
+    /**
+     * 成片的配音情况:接不接得上音轨开录前就能判;声音是不是真在出、有没有文件取不到,等收带(final)时看 ——
+     * resume() 是异步的,刚开录那一刻上下文往往还是 suspended,那时下结论会误报「没有配音」。
+     */
+    const audioReport = (final: boolean): ExportAudioReport => {
+      if (!hasVoice) {
+        return { status: 'none' };
+      }
+      if (!wantVoice) {
+        return { status: 'off' };
+      }
+      if (!voice) {
+        return { status: 'dropped', reason: '当前浏览器不支持 Web Audio,录不进配音' };
+      }
+      const reason = !audioTrack
+        ? '接不上录制用的音轨'
+        : !rec.audio
+          ? '浏览器的录制流加不了音轨'
+          : null;
+      if (reason !== null) {
+        return { status: 'dropped', reason };
+      }
+      if (!final) {
+        return { status: 'pending' };
+      }
+      if (voice.running === false) {
+        return { status: 'dropped', reason: '浏览器没有允许出声(音频上下文被挂起),录到的是静音' };
+      }
+      if (!voice.enabled) {
+        return { status: 'dropped', reason: '录制途中声音被关掉了,录到的是静音' };
+      }
+      const type = rec.outputType;
+      const codec = audioCodecOf(type);
+      const urls = new Set(segments.flatMap((s) => (s.voice?.clips ?? []).map((c) => c.url)));
+      const failed = voice.failedUrls().filter((url) => urls.has(url));
+      return withPlaybackNote(
+        failed.length > 0
+          ? {
+              status: 'partial',
+              ...(codec !== undefined ? { codec } : {}),
+              failed,
+              reason: `${failed.length} 个配音文件取不到或解不开,那几句是静音`,
+            }
+          : { status: 'included', ...(codec !== undefined ? { codec } : {}) },
+        type,
+      );
+    };
+    const initialAudio = audioReport(false);
+    if (initialAudio.status === 'dropped') {
+      console.warn(`[export] ${initialAudio.reason ?? ''},成片没有配音`);
+    }
+    // 收带那一刻定论(宿主的 done 回调排在这之后,读到的就是它);之后上下文怎么变都不影响。
+    let finalAudio: ExportAudioReport | null = null;
+    rec.done.then(
+      () => {
+        finalAudio = audioReport(true);
+        if (initialAudio.status !== 'dropped' && finalAudio.status === 'dropped') {
+          console.warn(`[export] ${finalAudio.reason ?? ''},成片没有配音`);
+        }
+      },
+      () => undefined,
+    );
     // 导出是墙钟实时录制,暂停态下永远录不完:先恢复播放(并通知宿主同步按钮)。
     driver.setPaused(false);
     recorder = rec;
@@ -498,6 +595,9 @@ export function runFilm(
       done: rec.done,
       mimeType: rec.mimeType,
       mode: 'realtime',
+      get audio(): ExportAudioReport {
+        return finalAudio ?? audioReport(false);
+      },
       cancel: () => rec.cancel(),
     };
   };
@@ -511,6 +611,18 @@ export function runFilm(
     }
     const mode = exportOptions?.mode ?? 'auto';
     const offlineEnv = mode === 'realtime' ? null : (options?.offlineEnv ?? browserOfflineEnv());
+    // auto 模式离线带不上配音时改走实时录制 —— 前提是实时录制真录得进:录制端录得了所选容器(带音频的写法),
+    // 播放器建得出音频上下文、接得出录制音轨。录不进就不回退(照常离线出片、报 dropped),免得用户白等一遍实时播放。
+    // 回退发生时已经不在这次点击里了:趁点击把音频上下文建好(不出声)。
+    let voiceFallback = false;
+    if (offlineEnv && mode === 'auto' && voice && hasVoice && exportOptions?.audio !== false) {
+      const recEnv = options?.exportEnv ?? browserRecorderEnv();
+      const recordable =
+        recEnv !== null &&
+        pickMimeType(exportOptions?.mimeType, (t) => recEnv.MediaRecorder.isTypeSupported(t), { audio: true })
+          .error === null;
+      voiceFallback = recordable && voice.prime();
+    }
     let handle: ExportHandle;
     if (offlineEnv) {
       // 离线:另起一套离屏实例按帧渲染,预览照常播放、照常能跳转。
@@ -522,10 +634,11 @@ export function runFilm(
         transitionMs,
         veilColor,
         subtitleVisual: showSubtitles ? visual : null,
+        progressVisual,
         env: offlineEnv,
         ...(exportOptions ? { options: exportOptions } : {}),
-        // auto:编码器编不了所选容器就退回实时录制;显式要离线则直接失败。
-        ...(mode === 'auto' ? { fallback: () => startRealtime(exportOptions) } : {}),
+        // auto:编码器编不了所选容器(或带不上配音)就退回实时录制;显式要离线则直接失败(配音按丢弃报告)。
+        ...(mode === 'auto' ? { fallback: () => startRealtime(exportOptions), voiceFallback } : {}),
         reportError: reportSegmentError,
       });
       offline = session;
@@ -547,6 +660,8 @@ export function runFilm(
         activeExport = null;
         offline = null;
       }
+      // prime() 建的上下文若最终没用上(离线带上了配音、声音仍关着),挂起它。
+      voice?.unprime();
     };
     handle.done.then(settle, settle);
     return handle;
@@ -629,6 +744,10 @@ export function runFilm(
     exportVideo,
     getState,
     setAudioEnabled: (enabled: boolean): void => {
+      // 实时录制期间声音就是成片的音轨:关掉会录成静音。和暂停一样,录制期间不理。
+      if (!enabled && recorder !== null) {
+        return;
+      }
       voice?.setEnabled(enabled);
       syncVoice();
       wake();

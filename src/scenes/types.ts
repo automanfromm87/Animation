@@ -38,6 +38,11 @@ export interface SceneHandle {
   /** 场景有没有配音(有才显示声音开关)。 */
   readonly audioAvailable?: () => boolean;
   /**
+   * 声音此刻开没开。播放器自己也会开声音(实时录制要把配音录进去),
+   * 宿主的开关按钮据此对齐,而不是自己猜。
+   */
+  readonly audioEnabled?: () => boolean;
+  /**
    * 开 / 关声音。浏览器要求第一次出声发生在用户操作里:请在按钮的点击回调里同步调用。
    */
   readonly setAudioEnabled?: (enabled: boolean) => void;

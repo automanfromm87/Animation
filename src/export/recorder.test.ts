@@ -1,8 +1,10 @@
 import { createExportStub } from '../testing/exportStub';
-import type { ExportStub, ExportStubOptions } from '../testing/exportStub';
-import { equal, ok, suite } from '../testing/harness';
+import type { ExportOp, ExportStub, ExportStubOptions } from '../testing/exportStub';
+import { equal, ok, quiet, suite } from '../testing/harness';
+import type { ProgressVisual } from './composite';
 import { ExportRecorder, browserRecorderEnv } from './recorder';
-import type { RecorderFrame } from './recorder';
+import type { ExportRecorderInit, RecorderFrame } from './recorder';
+import type { ExportOptions } from './types';
 import { isFilmError } from './types';
 
 /**
@@ -26,7 +28,7 @@ function rig(options?: ExportStubOptions): Rig {
     env: ex.env,
     now: () => now,
   });
-  const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, position: 0 };
+  const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, progress: null, position: 0 };
   return {
     ex,
     rec,
@@ -36,6 +38,50 @@ function rig(options?: ExportStubOptions): Rig {
     },
   };
 }
+
+/** 直接建一个录制器(1280×720,css 宽 1280),extra 覆盖/补充初始化参数。 */
+function make(ex: ExportStub, extra: Partial<ExportRecorderInit> = {}): ExportRecorder {
+  return ExportRecorder.create({
+    main: { width: 1280, height: 720 } as HTMLCanvasElement,
+    mainCssWidth: () => 1280,
+    veilColor: '#fff',
+    total: 10,
+    env: ex.env,
+    ...extra,
+  });
+}
+
+/** 取消并吞掉 reject(用例只看创建时的状态)。 */
+async function discard(rec: ExportRecorder): Promise<void> {
+  rec.cancel();
+  await rec.done.catch(() => undefined);
+}
+
+function fakeAudioTrack(): MediaStreamTrack {
+  return { kind: 'audio', stop: () => undefined } as unknown as MediaStreamTrack;
+}
+
+/** 一条好认的进度条:每个部件一种颜色。 */
+const BAR: ProgressVisual = {
+  position: 'bottom',
+  blockPx: 38,
+  trackPx: 3,
+  color: '#f00',
+  background: '#0f0',
+  tickColor: '#00f',
+  tickWidthPx: 2,
+  tickPx: 8,
+  chapterTickPx: 14,
+  labelPx: 14,
+  labelOffsetPx: 20,
+  labelGapPx: 6,
+  labelColor: '#123',
+  labelFontFamily: 'serif',
+  ticks: [
+    { frac: 0, chapter: true, label: '一 · 甲' },
+    { frac: 0.5, chapter: false, label: null },
+  ],
+};
 
 export default suite('导出录制器', [
   [
@@ -119,7 +165,7 @@ export default suite('导出录制器', [
         now: () => now,
       });
       rec.start();
-      const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, position: 0 };
+      const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, progress: null, position: 0 };
       // 录 5 秒、只交 1KB:成片字节远低于下限,必须判成编码器断供(时长没被算成 0)。
       for (let i = 0; i < 150; i++) {
         now += 34;
@@ -158,7 +204,7 @@ export default suite('导出录制器', [
       equal(ex.recorderOptions()[0]?.['audioBitsPerSecond'], 128_000);
       equal(rec.mimeType, 'video/webm;codecs=vp9,opus', '带配音时应选带 Opus 的格式');
       rec.start();
-      const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, position: 0 };
+      const frame: RecorderFrame = { veilAlpha: 0, subtitle: null, progress: null, position: 0 };
       for (let i = 0; i < 12; i++) {
         now += 34;
         rec.tick(now, frame);
@@ -209,6 +255,123 @@ export default suite('导出录制器', [
       equal(ex.streamTracks().length, 1, '流里只有视频轨道');
       rec.cancel();
       await rec.done.catch(() => undefined);
+    },
+  ],
+  [
+    'audio 标记:配音音轨并进了捕获流才为 true;没给音轨、或捕获流加不了音轨时为 false',
+    async () => {
+      const withTrack = make(createExportStub(), { audioTrack: fakeAudioTrack() });
+      equal(withTrack.audio, true, '音轨加进去了,audio 应为 true');
+      const plain = make(createExportStub());
+      equal(plain.audio, false, '没给音轨,audio 应为 false');
+      let noAdd: ExportRecorder | null = null;
+      await quiet(() => {
+        noAdd = make(createExportStub({ noAddTrack: true }), { audioTrack: fakeAudioTrack() });
+      });
+      const rec = noAdd as ExportRecorder | null;
+      equal(rec?.audio, false, '捕获流加不了音轨,audio 应为 false');
+      for (const r of [withTrack, plain, rec]) {
+        if (r) {
+          await discard(r);
+        }
+      }
+    },
+  ],
+  [
+    'outputType 优先取编码器实际选用的类型;编码器报空串时退回选定的 mimeType',
+    async () => {
+      const actual = make(createExportStub({ recorderMimeType: 'video/mp4;codecs=avc1.64001f,mp4a.40.2' }), {
+        audioTrack: fakeAudioTrack(),
+      });
+      equal(actual.mimeType, 'video/mp4;codecs=avc1,mp4a.40.2');
+      equal(actual.outputType, 'video/mp4;codecs=avc1.64001f,mp4a.40.2', '应当取编码器实际选用的类型');
+      const blank = make(createExportStub({ recorderMimeType: '' }));
+      equal(blank.outputType, blank.mimeType, '编码器没报类型时应退回选定值');
+      equal(blank.outputType, 'video/mp4');
+      await discard(actual);
+      await discard(blank);
+    },
+  ],
+  [
+    'options.progress:false:帧里给了进度条也不画;缺省照画(轨道、填充、刻度、章名)',
+    () => {
+      const drawn = (options?: ExportOptions): ExportOp[] => {
+        const ex = createExportStub();
+        let now = 5000;
+        const rec = make(ex, { now: () => now, ...(options ? { options } : {}) });
+        rec.start();
+        const frame: RecorderFrame = {
+          veilAlpha: 0,
+          subtitle: null,
+          progress: { value: 0.5, visual: BAR },
+          position: 5,
+        };
+        for (let i = 0; i < 3; i++) {
+          now += 34;
+          rec.tick(now, frame);
+        }
+        equal(ex.composited(), 3, '每 34ms 应当合成一帧');
+        rec.cancel();
+        rec.done.catch(() => undefined);
+        return ex.exportOps();
+      };
+      const on = drawn();
+      const rects = (ops: ExportOp[]): string[] =>
+        ops.filter((o) => o.op === 'fillRect').map((o) => `${String(o.fillStyle)}@${o.args.join(',')}`);
+      // 1280×720、css 宽 1280:scale 1,进度条贴底边。
+      const onRects = rects(on);
+      ok(onRects.includes('#0f0@0,717,1280,3'), `缺省应当画轨道:${onRects.join(' ')}`);
+      ok(onRects.includes('#f00@0,717,640,3'), `缺省应当画一半的填充:${onRects.join(' ')}`);
+      ok(onRects.includes('#f00@0,706,2,14'), `缺省应当画章节刻度:${onRects.join(' ')}`);
+      ok(onRects.includes('#00f@640,712,2,8'), `缺省应当画普通刻度:${onRects.join(' ')}`);
+      const label = on.find((o) => o.op === 'fillText');
+      equal(label?.text, '一 · 甲');
+      equal(label?.font, '14px serif');
+      equal(label?.fillStyle, '#123');
+      equal(drawn({ progress: true }).filter((o) => o.op === 'clip').length, 3, 'progress:true 与缺省一样画');
+
+      const off = drawn({ progress: false });
+      ok(off.some((o) => o.op === 'drawImage'), 'progress:false 时主画面照常合成');
+      const barColors = new Set(['#0f0', '#f00', '#00f', '#123']);
+      const leaked = off.filter(
+        (o) => o.op === 'clip' || o.op === 'fillText' || (o.op === 'fillRect' && barColors.has(String(o.fillStyle))),
+      );
+      equal(leaked.map((o) => `${o.op}:${String(o.fillStyle)}`).join('|'), '', 'progress:false 仍画了进度条');
+    },
+  ],
+  [
+    '带配音时自动格式先钉 MP4 + AAC;显式的裸 video/mp4 也升级成带 AAC 的写法,其余显式格式与不带配音时不动',
+    async () => {
+      const cases: Array<{
+        name: string;
+        supported?: readonly string[];
+        mimeType?: string;
+        audio: boolean;
+        want: string;
+      }> = [
+        { name: '自动 + 配音', audio: true, want: 'video/mp4;codecs=avc1,mp4a.40.2' },
+        {
+          name: '自动 + 配音(只认这两种)',
+          supported: ['video/mp4', 'video/mp4;codecs=avc1,mp4a.40.2'],
+          audio: true,
+          want: 'video/mp4;codecs=avc1,mp4a.40.2',
+        },
+        { name: '自动 + 配音(不认 AAC 写法)', supported: ['video/mp4'], audio: true, want: 'video/mp4' },
+        { name: '自动、无配音', audio: false, want: 'video/mp4' },
+        { name: '显式 video/mp4 + 配音', mimeType: 'video/mp4', audio: true, want: 'video/mp4;codecs=avc1,mp4a.40.2' },
+        { name: '显式 video/mp4、无配音', mimeType: 'video/mp4', audio: false, want: 'video/mp4' },
+        { name: '显式 webm + 配音', mimeType: 'video/webm', audio: true, want: 'video/webm' },
+      ];
+      for (const c of cases) {
+        const ex = createExportStub(c.supported ? { supportedTypes: c.supported } : undefined);
+        const rec = make(ex, {
+          ...(c.audio ? { audioTrack: fakeAudioTrack() } : {}),
+          ...(c.mimeType !== undefined ? { options: { mimeType: c.mimeType } } : {}),
+        });
+        equal(rec.mimeType, c.want, `${c.name}:选错了格式`);
+        equal(ex.recorderOptions()[0]?.['mimeType'], c.want, `${c.name}:交给编码器的格式不对`);
+        await discard(rec);
+      }
     },
   ],
 ]);

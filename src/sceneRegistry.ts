@@ -1,3 +1,4 @@
+import type { ExportAudioReport } from './export/types';
 import { FilmError, isFilmError } from './export/types';
 import type { FilmController, Segment } from './film/types';
 import type { SceneEntry, SceneHandle } from './scenes/types';
@@ -16,6 +17,7 @@ export function fromFilm(controller: FilmController): SceneHandle {
     exportVideo: (options) => controller.exportVideo(options),
     setPaused: (paused) => controller.setPaused(paused),
     audioAvailable: () => controller.getState().audio.available,
+    audioEnabled: () => controller.getState().audio.enabled,
     setAudioEnabled: (enabled) => controller.setAudioEnabled(enabled),
   };
 }
@@ -220,6 +222,54 @@ export function exportErrorMessage(err: unknown): string {
   }
   const detail = err instanceof Error ? err.message : String(err);
   return `导出失败:${detail}`;
+}
+
+/** 地址的文件名部分(提示里列出缺了哪几个配音文件)。地址里有不成对的 % 时原样给,不能抛。 */
+function fileName(url: string): string {
+  const path = url.split(/[?#]/)[0] ?? url;
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  try {
+    return decodeURIComponent(name) || url;
+  } catch {
+    return name || url;
+  }
+}
+
+/**
+ * 导出完成后关于配音的说明:status 是状态文案,notice 是要用户看一眼的提示(没有为 null),
+ * announce 是给读屏的完整播报(状态 + 提示;读屏只听常驻的那个播报区,原因不能只写在可见提示里)。
+ * 配音没能进成片时导出照样算成功(画面是好的),但必须说出来 —— 以前只写一条 console.warn,用户拿到无声的片子也不知道为什么。
+ */
+export function exportAudioMessage(audio: ExportAudioReport | undefined): {
+  status: string;
+  notice: string | null;
+  announce: string;
+} {
+  const note = audio?.note !== undefined ? `${audio.note}。` : '';
+  let status: string;
+  let notice: string | null;
+  switch (audio?.status) {
+    case 'included':
+      status = '导出完成(含配音),已开始下载';
+      notice = note !== '' ? `成片含配音。${note}` : null;
+      break;
+    case 'partial': {
+      const failed = audio.failed ?? [];
+      const names = failed.slice(0, 3).map(fileName).join('、');
+      const more = failed.length > 3 ? ` 等 ${failed.length} 个` : '';
+      status = '导出完成,部分配音缺失,已开始下载';
+      notice = `成片含配音,但${audio.reason ?? '有配音文件没能加载'}${names !== '' ? `(${names}${more})` : ''}。${note}`;
+      break;
+    }
+    case 'dropped':
+      status = '导出完成(没有配音),已开始下载';
+      notice = `成片没有配音:${audio.reason !== undefined && audio.reason !== '' ? audio.reason : '原因不明'}。`;
+      break;
+    default:
+      status = '导出完成,已开始下载';
+      notice = null;
+  }
+  return { status, notice, announce: notice !== null ? `${status}。${notice}` : status };
 }
 
 /** 进度 → 整数百分比(按钮只显示整数,整数不变就不触发重渲染)。 */

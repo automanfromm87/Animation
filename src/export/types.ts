@@ -9,7 +9,8 @@
  * - 'offline':离线逐帧渲染 + WebCodecs 编码。虚拟时钟按帧推进,时间戳精确,比实时快,
  *   切到后台也照样导出,不占用正在播放的预览。
  * - 'realtime':墙钟实时录制(captureStream + MediaRecorder)。页面必须保持在前台,全片要实时播完。
- * - 'auto'(缺省):浏览器能用 WebCodecs 编出所选容器就离线,否则退回实时录制。
+ * - 'auto'(缺省):浏览器能用 WebCodecs 编出所选容器就离线,否则退回实时录制;
+ *   片子有配音而离线带不上(解不了码 / 编不了音频)、实时录制又录得进时,同样改走实时录制,而不是交一部无声的成片。
  */
 export type ExportMode = 'auto' | 'offline' | 'realtime';
 
@@ -38,6 +39,34 @@ export interface ExportOptions {
   onProgress?: (filmSeconds: number, totalSeconds: number) => void;
   /** 成片带不带配音,缺省带(片子里有配音时)。 */
   audio?: boolean;
+  /**
+   * 成片带不带进度条(轨道、填充、分段刻度、章名,与预览同一套样式;悬停提示不进成片),缺省带。
+   * 播放器本身没开进度条(FilmOptions.progress:false)时恒不带 —— 这里只能关,不能强加。
+   */
+  progress?: boolean;
+}
+
+/**
+ * 成片的配音情况。
+ * - 'pending':还没定(导出进行中,编码器还没探测完);
+ * - 'none':片子没有配音;
+ * - 'off':调用方要求不带(audio:false);
+ * - 'included':配音进了成片;
+ * - 'partial':进了成片,但有音频文件取不到 / 解不开,那几句是静音(failed 列出地址);
+ * - 'dropped':片子有配音,成片里却没有(reason 说明原因)。
+ */
+export type ExportAudioStatus = 'pending' | 'none' | 'off' | 'included' | 'partial' | 'dropped';
+
+export interface ExportAudioReport {
+  readonly status: ExportAudioStatus;
+  /** 音轨编码('aac' / 'opus' ……);拿不到时缺省。 */
+  readonly codec?: string;
+  /** partial / dropped 的原因(给用户看的中文说明)。 */
+  readonly reason?: string;
+  /** 播放提示(比如 MP4 里装的是 Opus,macOS 自带播放器放不出声音)。 */
+  readonly note?: string;
+  /** 取不到或解不开的音频地址(partial 时)。 */
+  readonly failed?: readonly string[];
 }
 
 /** 导出句柄。 */
@@ -49,10 +78,27 @@ export interface ExportHandle {
    * 实际格式以成片 Blob 的 type 为准。
    */
   readonly mimeType: string;
-  /** 实际走的导出方式。auto 模式下离线编码器探测失败会改走实时录制,这个值随之变化。 */
+  /** 实际走的导出方式。auto 模式下离线编码器探测失败(或带不上配音)会改走实时录制,这个值随之变化。 */
   readonly mode: 'offline' | 'realtime';
+  /**
+   * 成片的配音情况。done resolve 之后读到的是定论;进行中读到的是目前已知的情况。
+   * 配音没能进成片时导出照样成功(画面是好的),宿主据此提示用户,而不是只写一条 console.warn。
+   */
+  readonly audio: ExportAudioReport;
   /** 取消导出(播放继续)。收带窗口期内取消同样生效:done 会 reject 'cancelled'。 */
   cancel(): void;
+}
+
+/** MP4 里装的是 Opus 时给用户的播放提示(macOS 自带播放器放不出这种组合的声音)。 */
+export const OPUS_IN_MP4_NOTE = 'MP4 里的音轨是 Opus,QuickTime / 访达预览可能放不出声音,请用浏览器或 VLC 播放';
+
+/** 按成片容器与音轨编码补上播放提示(成片里有音轨时才有意义:included / partial)。 */
+export function withPlaybackNote(report: ExportAudioReport, mimeType: string): ExportAudioReport {
+  return (report.status === 'included' || report.status === 'partial') &&
+    report.codec === 'opus' &&
+    mimeType.includes('mp4')
+    ? { ...report, note: OPUS_IN_MP4_NOTE }
+    : report;
 }
 
 /** 导出失败的原因码。宿主按 code 分支,不要匹配 message 文案。 */

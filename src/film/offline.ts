@@ -2,24 +2,24 @@ import { AudioLibrary } from '../audio/library';
 import { clampPlanes, mixWindow } from '../audio/mix';
 import type { PlacedClip } from '../audio/types';
 import type { FrameClock } from '../engine';
-import type { SubtitleVisual } from '../export/composite';
+import type { ExportProgress, ProgressVisual, SubtitleVisual } from '../export/composite';
 import { compositeFrame } from '../export/composite';
 import type { VideoEncoderSink } from '../export/encoder';
 import type { OfflineEnv } from '../export/offlineEnv';
 import { EXPORT_AUDIO_CHANNELS, EXPORT_AUDIO_SAMPLE_RATE } from '../export/offlineEnv';
 import { DEFAULT_MAX_LONG_EDGE, exportGeometry, exportSize } from '../export/output';
 import { MAX_FRAME_ERRORS } from '../export/recorder';
-import type { ExportHandle, ExportOptions } from '../export/types';
-import { FilmError, describeError, isFilmError } from '../export/types';
+import type { ExportAudioReport, ExportHandle, ExportOptions } from '../export/types';
+import { FilmError, describeError, isFilmError, withPlaybackNote } from '../export/types';
 import { FilmDriver } from './driver';
 import type { FilmPlan } from './timeline';
-import { subtitleAt, subtitleSafeBottom } from './timeline';
+import { progressFraction, subtitleAt, subtitleSafeBottom } from './timeline';
 import { Veil } from './transition';
 import type { Segment, SegmentContext, SegmentErrorPhase } from './types';
 
 /**
  * 确定性离线导出:另起一套无界面的影片驱动,在离屏画布上用虚拟时钟逐帧推进,
- * 每帧合成(主画面 + 白闪 + 字幕,与实时导出同一套合成)后交给 WebCodecs 编码。
+ * 每帧合成(主画面 + 白闪 + 字幕 + 进度条,与实时导出同一套合成)后交给 WebCodecs 编码。
  * 时间戳按帧号精确给出,与墙钟无关:比实时快、不掉帧,切到后台也照样导出,
  * 也不占用正在播放的预览(预览和导出是两套互不相干的实例)。
  */
@@ -88,6 +88,8 @@ export interface OfflineExportInit {
   veilColor: string;
   /** 字幕样式(与预览同一份);null 表示不画字幕。 */
   subtitleVisual: SubtitleVisual | null;
+  /** 进度条样式(与预览同一份);null 表示播放器没开进度条。 */
+  progressVisual: ProgressVisual | null;
   env: OfflineEnv;
   options?: ExportOptions;
   /**
@@ -95,6 +97,12 @@ export interface OfflineExportInit {
    * 不传时以 unsupported-mime 失败。
    */
   fallback?: () => ExportHandle;
+  /**
+   * 片子有配音、离线却带不上(解不了码 / 编不了音频)时也走 fallback,而不是交一部无声的成片。
+   * 只在 fallback 录得进配音时给(有音频上下文、接得出录制音轨、录制端录得了所选容器),
+   * 否则回退只会让用户白等一遍实时播放,甚至把本来能出的无声成片变成失败。
+   */
+  voiceFallback?: boolean;
   /** 分段出错时回调(跳过出错的分段继续导出)。 */
   reportError?: (error: unknown, info: { segment: string; phase: SegmentErrorPhase }) => void;
 }
@@ -266,19 +274,38 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
     }
   };
 
+  // 配音:要带(缺省带)、片子里有音频、环境解得了码,才向编码端要音频轨。
+  const hasVoice = init.segments.some((segment) => (segment.voice?.clips.length ?? 0) > 0);
+  const wantVoice = hasVoice && opts?.audio !== false;
+  let audio: ExportAudioReport = !hasVoice
+    ? { status: 'none' }
+    : wantVoice
+      ? { status: 'pending' }
+      : { status: 'off' };
+  /** 离线带不上配音、改走实时录制的原因(null 表示不是因为配音回退)。 */
+  let voiceFallbackReason: string | null = null;
+  const canVoiceFallback = init.voiceFallback === true && init.fallback !== undefined;
+  const dropVoice = (reason: string): void => {
+    console.warn(`[export] ${reason},成片没有配音`);
+    audio = { status: 'dropped', reason };
+  };
+
   const render = async (): Promise<Blob | null> => {
+    const loader = wantVoice ? init.env.audio : undefined;
+    if (wantVoice && !loader) {
+      const reason = '当前浏览器解码不了音频(缺少 OfflineAudioContext)';
+      if (canVoiceFallback) {
+        voiceFallbackReason = reason;
+        return null;
+      }
+      dropVoice(reason);
+    }
     const out = init.env.createCanvas();
     out.width = size.width;
     out.height = size.height;
     const ctx = out.getContext('2d');
     if (!ctx) {
       throw new FilmError('init', '导出初始化失败:拿不到导出画布的 2D 上下文');
-    }
-    // 配音:要带(缺省带)、片子里有音频、环境解得了码,才向编码端要音频轨。
-    const hasVoice = init.segments.some((segment) => (segment.voice?.clips.length ?? 0) > 0);
-    const loader = opts?.audio !== false && hasVoice ? init.env.audio : undefined;
-    if (opts?.audio !== false && hasVoice && !loader) {
-      console.warn('[export] 当前环境解码不了音频,成片没有配音');
     }
     let encoder: VideoEncoderSink | null;
     try {
@@ -304,13 +331,26 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
       throw stopped;
     }
     if (loader && !sink.audio) {
-      console.warn('[export] 浏览器编不了这个容器的音频,成片没有配音');
+      const reason = `浏览器编不了 ${sink.mimeType} 的音频`;
+      if (canVoiceFallback) {
+        voiceFallbackReason = reason;
+        await sink.cancel().catch(() => undefined);
+        out.width = 0;
+        out.height = 0;
+        return null;
+      }
+      dropVoice(reason);
     }
+    /** 取不到 / 解不开的音频(混成静音,成片报告为 partial)。 */
+    const failedUrls = new Set<string>();
     const voice =
       loader && sink.audio
         ? new OfflineVoiceTrack(
             init.segments,
-            new AudioLibrary(loader),
+            new AudioLibrary(loader, (url, error) => {
+              failedUrls.add(url);
+              console.warn(`[audio] 音频加载失败,按静音处理:${url}`, error);
+            }),
             sink,
             EXPORT_AUDIO_SAMPLE_RATE,
             EXPORT_AUDIO_CHANNELS,
@@ -322,6 +362,9 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
     const main = init.env.createCanvas();
     const veil = new Veil(1);
     const visual = init.subtitleVisual;
+    // 进度条的值每帧改写,对象只建一次(opts.progress === false 时成片不带)。
+    const bar: ExportProgress | null =
+      init.progressVisual && opts?.progress !== false ? { value: 0, visual: init.progressVisual } : null;
     let ended = false;
     let failure: FilmError | null = null;
     const contextFor = (segment: Segment): SegmentContext => ({
@@ -402,6 +445,9 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
           const segment = driver.currentSegment();
           const text =
             visual && segment ? subtitleAt(segment.subtitles ?? [], driver.segmentElapsed()) : '';
+          if (bar) {
+            bar.value = progressFraction(driver.position(), init.plan.total);
+          }
           const { rect, scale } = exportGeometry(main.width, main.height, cssW, size.width, size.height);
           compositeFrame(ctx, size.width, size.height, {
             main,
@@ -410,6 +456,7 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
             veilAlpha: veil.alpha,
             veilColor: init.veilColor,
             subtitle: visual && text !== '' ? { text, visual } : null,
+            progress: bar,
           });
           frameErrors = 0;
         } catch (e) {
@@ -462,11 +509,28 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
       if (stopped) {
         throw stopped;
       }
+      let blob: Blob;
       try {
-        return await sink.finish();
+        blob = await sink.finish();
       } catch (e) {
         throw new FilmError('encoder', `视频收尾失败:${describeError(e)}`, describeError(e));
       }
+      if (voice && sink.audio) {
+        const codec = sink.audio.codec;
+        const failed = [...failedUrls];
+        audio = withPlaybackNote(
+          failed.length > 0
+            ? {
+                status: 'partial',
+                codec,
+                failed,
+                reason: `${failed.length} 个配音文件取不到或解不开,那几句是静音`,
+              }
+            : { status: 'included', codec },
+          blob.type || sink.mimeType,
+        );
+      }
+      return blob;
     } catch (e) {
       await sink.cancel().catch(() => undefined);
       throw e;
@@ -489,10 +553,13 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
         resolveDone(blob);
         return;
       }
-      // 编码器编不了请求的容器:auto 模式改走实时录制,否则明确失败。
+      // 编码器编不了请求的容器(或带不上配音):auto 模式改走实时录制,否则明确失败。
       if (stopped) {
         rejectDone(stopped);
         return;
+      }
+      if (voiceFallbackReason !== null) {
+        console.warn(`[export] ${voiceFallbackReason},改用实时录制把配音录进去`);
       }
       if (!init.fallback) {
         rejectDone(
@@ -523,6 +590,9 @@ export function exportFilmOffline(init: OfflineExportInit): OfflineExport {
       },
       get mode(): 'offline' | 'realtime' {
         return delegate?.mode ?? 'offline';
+      },
+      get audio(): ExportAudioReport {
+        return delegate?.audio ?? audio;
       },
       cancel: () => abort(new FilmError('cancelled', '导出已取消')),
     },

@@ -23,19 +23,27 @@ export class VoicePlayback {
   /** 上一次对账时的参数(可见性变化、开声音时立刻补一次对账)。 */
   private last: { segment: Segment | null; elapsed: number; playing: boolean; next: Segment | null } | null = null;
   private readonly preloaded = new WeakSet<Segment>();
+  /** 取不到 / 解不开的音频地址(实时录制据此报告成片缺了哪几句)。 */
+  private readonly failed = new Set<string>();
 
   constructor(env: LiveAudioEnv) {
     this.env = env;
-    this.library = new AudioLibrary({
-      fetch: (url) => env.fetch(url),
-      decode: (bytes) => {
-        const ctx = this.ctx;
-        if (!ctx) {
-          return Promise.reject(new Error('还没有音频上下文'));
-        }
-        return ctx.decodeAudioData(bytes);
+    this.library = new AudioLibrary(
+      {
+        fetch: (url) => env.fetch(url),
+        decode: (bytes) => {
+          const ctx = this.ctx;
+          if (!ctx) {
+            return Promise.reject(new Error('还没有音频上下文'));
+          }
+          return ctx.decodeAudioData(bytes);
+        },
       },
-    });
+      (url, error) => {
+        this.failed.add(url);
+        console.warn(`[audio] 音频加载失败,按静音处理:${url}`, error);
+      },
+    );
     this.stopVisibility = env.onVisibilityChange(() => {
       const ctx = this.ctx;
       if (!ctx || !this.enabledValue) {
@@ -64,6 +72,7 @@ export class VoicePlayback {
     if (!on) {
       this.enabledValue = false;
       this.player?.stopAll();
+      this.idle();
       return;
     }
     if (!this.ensureContext()) {
@@ -72,6 +81,37 @@ export class VoicePlayback {
     this.enabledValue = true;
     void this.ctx?.resume().catch(() => undefined);
     this.resync();
+  }
+
+  /**
+   * 在用户操作(点击)里先把音频上下文建好,但不出声。
+   * 离线导出可能在编码器探测完之后才改走实时录制 —— 那时已经不在点击里了,
+   * 新建的上下文会被浏览器的自动播放策略挂起,录出来是静音。
+   * 返回之后能不能把声音接进录制(有上下文、能建录制音轨)。
+   */
+  prime(): boolean {
+    if (this.disposed || !this.ensureContext()) {
+      return false;
+    }
+    void this.ctx?.resume().catch(() => undefined);
+    return typeof this.ctx?.createMediaStreamDestination === 'function';
+  }
+
+  /** prime() 建的上下文最终没用上(离线导出带上了配音、声音仍关着):挂起它,不让它空跑。 */
+  unprime(): void {
+    if (!this.disposed) {
+      this.idle();
+    }
+  }
+
+  /** 音频上下文在跑(没有上下文时为 null)。挂起的上下文录出来是静音。 */
+  get running(): boolean | null {
+    return this.ctx ? this.ctx.state === 'running' : null;
+  }
+
+  /** 取不到或解不开过的音频地址。 */
+  failedUrls(): string[] {
+    return [...this.failed];
   }
 
   /**
@@ -95,6 +135,9 @@ export class VoicePlayback {
    */
   captureTrack(): MediaStreamTrack | null {
     this.setEnabled(true);
+    // 声音早就开着时 setEnabled 直接返回:上下文若被系统挂起过(切后台、换输出设备),借导出这次点击再唤一次。
+    void this.ctx?.resume().catch(() => undefined);
+    this.retryFailed();
     const ctx = this.ctx;
     const master = this.master;
     if (!ctx || !master || typeof ctx.createMediaStreamDestination !== 'function') {
@@ -137,6 +180,30 @@ export class VoicePlayback {
     void this.ctx?.close().catch(() => undefined);
     this.ctx = null;
     this.player = null;
+  }
+
+  /** 没开声音、也没在录:把上下文挂起(关声音、prime 之后没用上都走这里)。 */
+  private idle(): void {
+    if (this.ctx && !this.enabledValue && !this.capture) {
+      void this.ctx.suspend().catch(() => undefined);
+    }
+  }
+
+  /**
+   * 实时录制开始前,之前取不到 / 解不开的音频再试一次:预览时的偶发失败(断网、文件当时还没生成)不该让成片缺句。
+   * 报告只算这次录制期间的失败(再失败会经 onError 重新记上);解好的缓存不动。
+   */
+  private retryFailed(): void {
+    if (this.failed.size === 0 || !this.ctx) {
+      return;
+    }
+    const urls = [...this.failed];
+    this.failed.clear();
+    for (const url of urls) {
+      this.library.release(url);
+      // 趁白场、开录前就去取,不等播放器到了提前量才取(那样句首会被切掉)。
+      void this.library.load(url);
+    }
   }
 
   private ensureContext(): boolean {

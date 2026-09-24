@@ -1,5 +1,5 @@
-import type { SubtitleVisual } from '../export/composite';
-import type { FilmOptions, Segment, Subtitle, SubtitleStyle } from './types';
+import type { ProgressTick, ProgressVisual, SubtitleVisual } from '../export/composite';
+import type { FilmOptions, ProgressStyle, Segment, Subtitle, SubtitleStyle } from './types';
 
 /** 清单总时长(秒)。 */
 export function filmDuration(segments: readonly Segment[]): number {
@@ -163,6 +163,68 @@ export function subtitleSafeBottom(visual: SubtitleVisual): number {
 /** 进度条章名标签字号。 */
 export function progressLabelPx(viewportWidth: number): number {
   return clampPx((viewportWidth > 0 ? viewportWidth : 1280) * 0.011, 10, 14);
+}
+
+/** 全片位置(秒)-> 进度比例(0~1)。直播进度条与导出合成共用。 */
+export function progressFraction(position: number, total: number): number {
+  return total > 0 && Number.isFinite(position) ? Math.min(1, Math.max(0, position / total)) : 0;
+}
+
+/** 进度条的默认样式(直播与导出共用)。 */
+export const PROGRESS_DEFAULTS = {
+  trackPx: 3,
+  color: '#1a1a1a',
+  background: 'rgba(0,0,0,0.12)',
+  tickColor: 'rgba(0,0,0,0.35)',
+  tickWidthPx: 2,
+  tickPx: 8,
+  chapterTickPx: 14,
+  labelOffsetPx: 20,
+  labelGapPx: 6,
+  labelColor: 'rgba(0,0,0,0.55)',
+} as const;
+
+/**
+ * 解析进度条的视觉样式;播放器没开进度条(progress:false 或片长为 0)时为 null。
+ * 刻度按声明时长算比例,章名按出现顺序编号(与章节键跳转同一套)。
+ */
+export function resolveProgressVisual(
+  segments: readonly Segment[],
+  style: ProgressStyle | undefined,
+  plan: FilmPlan,
+  viewportWidth: number,
+  fontFamily: string,
+): ProgressVisual | null {
+  if (!plan.progressOn) {
+    return null;
+  }
+  const fracs = segmentTicks(segments);
+  let chapterNo = 0;
+  const ticks = segments.map((s, i): ProgressTick => {
+    const label = s.chapter !== undefined ? `${chapterNumeral(chapterNo)} · ${s.chapter}` : null;
+    if (label !== null) {
+      chapterNo += 1;
+    }
+    return { frac: fracs[i] ?? 0, chapter: s.marker === 'chapter', label };
+  });
+  const height = style?.height;
+  return {
+    position: plan.barPosition,
+    blockPx: plan.barBlockPx,
+    trackPx: height !== undefined && Number.isFinite(height) && height >= 0 ? height : PROGRESS_DEFAULTS.trackPx,
+    color: style?.color ?? PROGRESS_DEFAULTS.color,
+    background: style?.background ?? PROGRESS_DEFAULTS.background,
+    tickColor: PROGRESS_DEFAULTS.tickColor,
+    tickWidthPx: PROGRESS_DEFAULTS.tickWidthPx,
+    tickPx: PROGRESS_DEFAULTS.tickPx,
+    chapterTickPx: PROGRESS_DEFAULTS.chapterTickPx,
+    labelPx: progressLabelPx(viewportWidth),
+    labelOffsetPx: PROGRESS_DEFAULTS.labelOffsetPx,
+    labelGapPx: PROGRESS_DEFAULTS.labelGapPx,
+    labelColor: PROGRESS_DEFAULTS.labelColor,
+    labelFontFamily: fontFamily,
+    ticks,
+  };
 }
 
 const NUMERALS = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];

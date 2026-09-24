@@ -1,12 +1,15 @@
+import type { LiveAudioEnv } from '../audio/live';
+import { fakeAudio, fakeLiveEnv } from '../audio/testing';
 import type { AudioLoader, DecodedAudio } from '../audio/types';
 import { Circle } from '../engine';
 import type { SceneViewport } from '../engine';
 import type { EncoderRequest, VideoEncoderSink } from '../export/encoder';
 import type { OfflineEnv } from '../export/offlineEnv';
 import { messageChannelYielder } from '../export/offlineEnv';
+import { OPUS_IN_MP4_NOTE } from '../export/types';
 import { createStubCanvas, flushTasks } from '../testing/domStub';
 import { createExportStub } from '../testing/exportStub';
-import { createFakeCtx } from '../testing/fakeCtx';
+import { CTX_STATE_DEFAULTS, createFakeCtx } from '../testing/fakeCtx';
 import type { FakeCtxCall } from '../testing/fakeCtx';
 import { equal, ok, quiet, suite } from '../testing/harness';
 import type { ExportHandle, Segment, SegmentContext, SegmentHandle } from './film';
@@ -266,6 +269,94 @@ function preview(segments: Segment[], env: OfflineEnv, extra: object = {}) {
   return { canvas, clock, film };
 }
 
+/** 导出画布上的一次调用,带上当时的 fillStyle / font。 */
+interface PaintOp extends FakeCtxCall {
+  fill: unknown;
+  font: unknown;
+}
+
+/**
+ * 把导出画布的调用按帧切开(marks 是每次 addFrame 时的调用数)。
+ * 假 ctx 把属性赋值('=fillStyle')和方法调用分开记:按顺序回放一遍,每个调用才知道当时的填充色与字体。
+ */
+function paintFrames(calls: readonly FakeCtxCall[], marks: readonly number[]): PaintOp[][] {
+  let fill: unknown = CTX_STATE_DEFAULTS['fillStyle'];
+  let font: unknown = CTX_STATE_DEFAULTS['font'];
+  const ops = calls.map((c): PaintOp => {
+    if (c.op === '=fillStyle') {
+      fill = c.value;
+    } else if (c.op === '=font') {
+      font = c.value;
+    }
+    return { ...c, fill, font };
+  });
+  return marks.map((m, i) => ops.slice(i === 0 ? 0 : (marks[i - 1] ?? 0), m));
+}
+
+/** 预览 800×450 -> 成片 1920×1080(scale 2.4):进度条贴底,轨道 / 填充高 round(3 × 2.4) = 7,顶边 y = 1073。 */
+const BAR_Y = 1073;
+const BAR_H = 7;
+
+/** 这一帧里进度条的填充矩形(默认墨色 '#1a1a1a'、x 0、贴底、高 7)。 */
+function fillRects(frame: readonly PaintOp[]): PaintOp[] {
+  return frame.filter(
+    (o) =>
+      o.op === 'fillRect' &&
+      o.fill === '#1a1a1a' &&
+      o.args[0] === 0 &&
+      o.args[1] === BAR_Y &&
+      o.args[3] === BAR_H,
+  );
+}
+
+/** 整帧的 fillRect 数:底色一次,盖着白闪时再来一次。 */
+function fullFrameRects(frame: readonly FakeCtxCall[]): number {
+  return frame.filter((c) => c.op === 'fillRect' && c.args[2] === 1920 && c.args[3] === 1080).length;
+}
+
+/** 两段各 1 秒,第一段是章节卡「甲」(进度条上画成「一 · 甲」)。 */
+function chapterFilm(): Segment[] {
+  return [{ ...holdSegment('A', 1), marker: 'chapter', chapter: '甲' }, holdSegment('B', 1)];
+}
+
+/**
+ * 假的 Web Audio 播放环境(实时录制录得进配音):上下文能接出一条录制音轨;
+ * contexts 记 createContext 被调了几次。urls 里的地址都能取到、解开。
+ */
+function liveAudio(urls: readonly string[]): {
+  env: ReturnType<typeof fakeLiveEnv>;
+  track: MediaStreamTrack;
+} {
+  const env = fakeLiveEnv(Object.fromEntries(urls.map((u) => [u, fakeAudio(1)])));
+  const audioTrack = { kind: 'audio', stop: () => undefined } as unknown as MediaStreamTrack;
+  const destination = { stream: { getAudioTracks: () => [audioTrack] } as unknown as MediaStream };
+  Object.assign(env.ctx, { createMediaStreamDestination: () => destination });
+  return { env, track: audioTrack };
+}
+
+/** 建不出音频上下文的播放环境(构造 AudioContext 抛错的浏览器):有 env,却录不进配音。 */
+function deadAudioEnv(): LiveAudioEnv & { contexts: number } {
+  const env = {
+    contexts: 0,
+    createContext: () => {
+      env.contexts += 1;
+      return null;
+    },
+    fetch: () => new Promise<ArrayBuffer>(() => undefined),
+    hidden: () => false,
+    onVisibilityChange: () => () => undefined,
+  };
+  return env;
+}
+
+/** 推着预览时钟一帧帧往前走(实时录制按墙钟录,靠它录完)。 */
+async function runPreview(clock: ManualClock, outcome: Outcome, limit = 3000): Promise<void> {
+  for (let i = 0; i < limit && outcome.state === 'pending'; i++) {
+    clock.advance(16);
+    await flushTasks();
+  }
+}
+
 export default suite('离线导出', [
   [
     '按帧号精确给时间戳,帧数 = 时长 × 帧率(±1),播完交出编码器的成片',
@@ -404,6 +495,108 @@ export default suite('离线导出', [
       // 片尾淡出:最后一帧又盖上了白闪。
       equal(fullRects(frameOf(marks.length - 1)), 2, '片尾没有淡出到白场');
       film.dispose();
+    },
+  ],
+  [
+    '进度条合成进成片:填充跟着虚拟时钟的影片位置走(穿过转场也不回退),与 onProgress 同值,播完填满;章名按缩放后的字号画在刻度右侧',
+    async () => {
+      const fe = fakeEnv();
+      const { film } = preview(chapterFilm(), fe.env, { transition: 0.2 });
+      const progress: number[] = [];
+      let total = 0;
+      const outcome = track(
+        film.exportVideo({
+          onProgress: (done, all) => {
+            progress.push(done);
+            total = all;
+          },
+        }),
+      );
+      await settle(outcome);
+      equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+      equal(fe.log.requests[0]?.width, 1920);
+      equal(fe.log.requests[0]?.height, 1080);
+      equal(total, 2);
+      const frames = paintFrames(fe.output(), fe.log.marks);
+      const n = frames.length;
+      equal(progress.length, n, '每帧应报一次进度');
+      const widths = frames.map((frame, i) => {
+        const rects = fillRects(frame);
+        ok(rects.length <= 1, `第 ${i} 帧画了 ${rects.length} 条填充`);
+        return rects[0]?.args[2] ?? 0;
+      });
+      // 片中确实经过了转场(A 淡出、B 淡入时白闪盖着):单调性要在这些帧上也成立。
+      const veiled = frames.filter((f, i) => i > 5 && i < n - 10 && fullFrameRects(f) === 2).length;
+      ok(veiled > 0, '片中没有经过转场,单调性没测到转场');
+      widths.forEach((w, i) => {
+        ok(i === 0 || w >= (widths[i - 1] ?? 0), `第 ${i} 帧填充回退了:${widths[i - 1]} -> ${w}`);
+        const expected = ((progress[i] ?? 0) / total) * 1920;
+        ok(Math.abs(w - expected) <= 1, `第 ${i} 帧填充宽 ${w},按 onProgress 应约为 ${expected.toFixed(1)}`);
+      });
+      equal(widths[0], 0, '开场进度为 0,不该画填充');
+      equal(widths[n - 1], 1920, '最后一帧填充应铺满整条');
+      // A 段中间(0.5 秒)≈ 0.5 / 2 × 1920 = 480。
+      const mid = widths[15] ?? 0;
+      ok(Math.abs(mid - 480) <= 2, `A 段中间的填充宽 ${mid},应约为 480`);
+      // 轨道、刻度(章节卡墨色大刻度 / 普通淡刻度)、章名:每帧都画。
+      const tickW = Math.round(2 * 2.4);
+      frames.forEach((frame, i) => {
+        const rects = frame.filter((o) => o.op === 'fillRect');
+        ok(
+          rects.some((o) => o.fill === 'rgba(0,0,0,0.12)' && o.args.join(',') === `0,${BAR_Y},1920,${BAR_H}`),
+          `第 ${i} 帧没有轨道`,
+        );
+        const chapterH = Math.round(14 * 2.4);
+        ok(
+          rects.some((o) => o.fill === '#1a1a1a' && o.args.join(',') === `0,${1080 - chapterH},${tickW},${chapterH}`),
+          `第 ${i} 帧没有章节刻度`,
+        );
+        const tickH = Math.round(8 * 2.4);
+        ok(
+          rects.some((o) => o.fill === 'rgba(0,0,0,0.35)' && o.args.join(',') === `960,${1080 - tickH},${tickW},${tickH}`),
+          `第 ${i} 帧没有 B 段的刻度`,
+        );
+        const labels = frame.filter((o) => o.op === 'fillText');
+        equal(labels.length, 1, `第 ${i} 帧的章名数不对`);
+        const label = labels[0];
+        equal(label?.value, '一 · 甲');
+        // 章名字号 progressLabelPx(800) = 10 -> ×2.4;没有 DOM 父节点时字体是缺省的 sans-serif。
+        equal(label?.font, '24px sans-serif', `第 ${i} 帧章名字体不对`);
+        ok(Math.abs((label?.args[0] ?? 0) - 14.4) < 1e-6, `章名应在刻度右侧 6 × 2.4 = 14.4 处,实际 ${label?.args[0]}`);
+        ok(Math.abs((label?.args[1] ?? 0) - (1080 - (20 + 5) * 2.4)) < 1e-6, `章名行中线位置不对:${label?.args[1]}`);
+      });
+      film.dispose();
+    },
+  ],
+  [
+    'exportVideo({progress:false}) 与 FilmOptions.progress:false:每帧都不画进度条(后者 progress:true 也强加不上);整帧矩形与带进度条时逐帧一致',
+    async () => {
+      const run = async (filmExtra: object, opts: object): Promise<PaintOp[][]> => {
+        const fe = fakeEnv();
+        const { film } = preview(chapterFilm(), fe.env, { transition: 0.2, ...filmExtra });
+        const outcome = track(film.exportVideo(opts));
+        await settle(outcome);
+        equal(outcome.state, 'resolved', `导出没有完成:${outcome.code}`);
+        film.dispose();
+        return paintFrames(fe.output(), fe.log.marks);
+      };
+      const withBar = await run({}, {});
+      ok(withBar.every((f) => f.some((o) => o.op === 'fillText')), '对照组应当每帧都有进度条');
+      const cases: Array<[string, PaintOp[][]]> = [
+        ['exportVideo({progress:false})', await run({}, { progress: false })],
+        ['FilmOptions.progress:false', await run({ progress: false }, {})],
+        ['FilmOptions.progress:false + exportVideo({progress:true})', await run({ progress: false }, { progress: true })],
+      ];
+      for (const [name, frames] of cases) {
+        equal(frames.length, withBar.length, `${name}:帧数与对照组不同`);
+        frames.forEach((frame, i) => {
+          const stray = frame.filter(
+            (o) => (o.op === 'fillRect' && !(o.args[2] === 1920 && o.args[3] === 1080)) || o.op === 'fillText' || o.op === 'clip',
+          );
+          equal(stray.length, 0, `${name}:第 ${i} 帧还画了进度条(${stray.map((o) => `${o.op}(${o.args.join(',')})`).join(' ')})`);
+          equal(fullFrameRects(frame), fullFrameRects(withBar[i] ?? []), `${name}:第 ${i} 帧的整帧矩形数变了`);
+        });
+      }
     },
   ],
   [
@@ -877,6 +1070,389 @@ export default suite('离线导出', [
       equal(left[Math.round(0.25 * 48000)], 1, '0.7 + 0.6 叠加后应收到 1');
       ok(left.every((v) => v <= 1 && v >= -1), '音轨不该超出 ±1');
       ok(Math.abs((left[Math.round((cStart + 0.25) * 48000)] ?? 0) - 0.7) < 1e-6, '第三段再次用到的文件照样混进去');
+      film.dispose();
+    },
+  ],
+  [
+    'ExportHandle.audio:没有配音报 none,audio:false 报 off(导出前后一致);带配音时出片前 pending,出片后 included 并带音轨编码',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }];
+
+      const fe1 = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const first = preview([holdSegment('A', 0.3)], fe1.env);
+      const h1 = first.film.exportVideo();
+      equal(h1.audio.status, 'none', '没有配音的片子一开始就该报 none');
+      const o1 = track(h1);
+      await settle(o1);
+      equal(o1.state, 'resolved');
+      equal(h1.audio.status, 'none');
+      equal(h1.audio.codec, undefined);
+      first.film.dispose();
+
+      const fe2 = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const second = preview([voiced(holdSegment('A', 0.3), clip)], fe2.env);
+      const h2 = second.film.exportVideo({ audio: false });
+      equal(h2.audio.status, 'off', 'audio:false 一开始就该报 off');
+      const o2 = track(h2);
+      await settle(o2);
+      equal(o2.state, 'resolved');
+      equal(h2.audio.status, 'off');
+      second.film.dispose();
+
+      for (const codec of ['fake-aac', 'aac']) {
+        const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: codec });
+        const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env);
+        const h = film.exportVideo();
+        equal(h.audio.status, 'pending', '编码器还没探测完,应报 pending');
+        const o = track(h);
+        await settle(o);
+        equal(o.state, 'resolved', `导出没有完成:${o.code}`);
+        equal(h.mode, 'offline');
+        equal(h.audio.status, 'included');
+        equal(h.audio.codec, codec, '音轨编码应取自编码端');
+        equal(h.audio.reason, undefined, `AAC 进 MP4 不需要提示:${h.audio.reason}`);
+        equal(h.audio.failed, undefined);
+        ok(fe.log.audio.length > 0, '配音应当写进编码端');
+        film.dispose();
+      }
+    },
+  ],
+  [
+    'ExportHandle.audio:编码端给的是 Opus 且装进 MP4 → included 附播放提示;装进 WebM 不提示',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }];
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: 'opus' });
+      const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env);
+      const h = film.exportVideo();
+      const o = track(h);
+      await settle(o);
+      equal(o.state, 'resolved');
+      equal(o.type, 'video/mp4');
+      equal(h.audio.status, 'included');
+      equal(h.audio.codec, 'opus');
+      equal(h.audio.note, OPUS_IN_MP4_NOTE, 'MP4 里装 Opus 应提示 QuickTime 放不出声音');
+      equal(h.audio.reason, undefined, 'included 不该有原因');
+      film.dispose();
+
+      const fe2 = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: 'opus' });
+      const second = preview([voiced(holdSegment('A', 0.3), clip)], fe2.env);
+      const h2 = second.film.exportVideo({ mimeType: 'video/webm' });
+      const o2 = track(h2);
+      await settle(o2);
+      equal(o2.state, 'resolved');
+      equal(o2.type, 'video/webm');
+      equal(h2.audio.status, 'included');
+      equal(h2.audio.codec, 'opus');
+      equal(h2.audio.note, undefined, 'WebM 里的 Opus 不需要提示');
+      second.film.dispose();
+    },
+  ],
+  [
+    'ExportHandle.audio:某个配音文件取不到 → partial,列出失败的地址并说明原因(能取到的照常进成片)',
+    async () => {
+      const loader = fakeLoader({ 'bad.wav': 'fail', 'good.wav': { seconds: 0.3, value: () => 0.5 } });
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const { film } = preview(
+        [
+          voiced(holdSegment('A', 1), [
+            { id: 'bad', url: 'bad.wav', start: 0, duration: 0.3 },
+            { id: 'good', url: 'good.wav', start: 0.5, duration: 0.3 },
+          ]),
+        ],
+        fe.env,
+      );
+      const h = film.exportVideo();
+      const o = track(h);
+      await quiet(async () => {
+        await settle(o);
+      });
+      equal(o.state, 'resolved', `文件取不到不该让导出失败:${o.code}`);
+      equal(h.audio.status, 'partial');
+      equal(h.audio.codec, 'fake-aac');
+      equal((h.audio.failed ?? []).join(','), 'bad.wav', `失败地址不对:${String(h.audio.failed)}`);
+      ok(typeof h.audio.reason === 'string' && h.audio.reason !== '', 'partial 应说明原因');
+      ok(joined(fe.log.audio, 0).some((v) => Math.abs(v - 0.5) < 1e-6), '能取到的那句应照常混进去');
+      film.dispose();
+    },
+  ],
+  [
+    '显式 offline:编码端编不了音频照常出片、报 dropped 并点明容器;环境解不了码同样 dropped;都不回退实时录制,也不建音频上下文',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }];
+      for (const mimeType of ['video/mp4', 'video/webm']) {
+        const live = liveAudio(['a.wav']);
+        const ex = createExportStub();
+        const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: null });
+        const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env, {
+          exportEnv: ex.env,
+          audio: { env: live.env },
+        });
+        const h = film.exportVideo({ mode: 'offline', mimeType });
+        equal(live.env.contexts, 0, '显式 offline 不会回退,不必建音频上下文');
+        const o = track(h);
+        await quiet(async () => {
+          await settle(o);
+        });
+        equal(o.state, 'resolved', `编码端编不了音频也要照常出片:${o.code}`);
+        equal(h.mode, 'offline', '显式 offline 不该回退实时录制');
+        equal(ex.recorderOptions().length, 0, '不该起实时录制');
+        equal(h.audio.status, 'dropped');
+        ok((h.audio.reason ?? '').includes(mimeType), `原因应点明容器 ${mimeType}:${h.audio.reason}`);
+        equal(fe.log.finished, 1);
+        equal(fe.log.cancelled, 0);
+        equal(fe.log.audio.length, 0);
+        equal(live.env.contexts, 0);
+        film.dispose();
+      }
+
+      const live = liveAudio(['a.wav']);
+      const ex = createExportStub();
+      const fe = fakeEnv({ recordOutput: false });
+      const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env, {
+        exportEnv: ex.env,
+        audio: { env: live.env },
+      });
+      // 解不了码是 exportVideo() 里同步判定的(提示也在那时写):调用本身也要静音。
+      const { warn } = console;
+      console.warn = (): void => undefined;
+      let h: ExportHandle;
+      try {
+        h = film.exportVideo({ mode: 'offline' });
+      } finally {
+        console.warn = warn;
+      }
+      const o = track(h);
+      await quiet(async () => {
+        await settle(o);
+      });
+      equal(o.state, 'resolved', `解不了码也要照常出片:${o.code}`);
+      equal(h.mode, 'offline');
+      equal(ex.recorderOptions().length, 0, '不该起实时录制');
+      equal(fe.log.requests[0]?.audio, undefined, '解不了码就不该要音频轨');
+      equal(h.audio.status, 'dropped');
+      ok(typeof h.audio.reason === 'string' && h.audio.reason !== '', 'dropped 应说明原因');
+      equal(live.env.contexts, 0);
+      film.dispose();
+    },
+  ],
+  [
+    'auto:带配音而编码端编不了音频 → 释放离线编码器、改走实时录制把配音录进去;配音情况以实时录制为准(录完仍是 included/aac)',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const live = liveAudio(['a.wav']);
+      const ex = createExportStub();
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: null });
+      const { film, clock } = preview(
+        [voiced(holdSegment('A', 0.5), [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }])],
+        fe.env,
+        { exportEnv: ex.env, audio: { env: live.env } },
+      );
+      const h = film.exportVideo();
+      // 离线探测完之后才回退,那时已经不在点击里:音频上下文必须在这次调用里同步建好。
+      equal(live.env.contexts, 1, 'auto + 配音应在点击里同步建好音频上下文');
+      equal(film.getState().audio.enabled, false, '预热上下文不该替用户开声音');
+      equal(h.mode, 'offline');
+      equal(h.audio.status, 'pending');
+      const o = track(h);
+      await quiet(async () => {
+        for (let i = 0; i < 5; i++) {
+          await flushTasks();
+        }
+      });
+      ok(fe.log.requests[0]?.audio !== undefined, '应当先向离线编码端要过音频轨');
+      equal(h.mode, 'realtime', '离线带不上配音时 auto 应改走实时录制');
+      equal(fe.log.cancelled, 1, '离线编码器没有释放');
+      equal(fe.log.finished, 0);
+      equal(fe.log.timestamps.length, 0, '回退前不该编过任何一帧');
+      equal(fe.canvases[0]?.width, 0, '离线导出画布没有还掉像素缓冲');
+      ok(ex.streamTracks().includes(live.track), '实时录制的媒体流里没有配音音轨');
+      equal(ex.recorderOptions()[0]?.['mimeType'], 'video/mp4;codecs=avc1,mp4a.40.2', '带配音录 MP4 应钉死 AAC');
+      equal(live.env.contexts, 1, '实时录制应沿用预热好的上下文');
+      // 开录前实时录制只能说「还没定」:声音在不在出要到收带才定论。
+      equal(h.audio.status, 'pending', `回退后应以实时录制的配音情况为准:${h.audio.status} ${h.audio.reason ?? ''}`);
+      await quiet(async () => {
+        await runPreview(clock, o);
+      });
+      equal(o.state, 'resolved', `实时录制没有录完:${o.code}`);
+      equal(o.type, 'video/mp4;codecs=avc1,mp4a.40.2');
+      equal(h.mode, 'realtime');
+      equal(h.audio.status, 'included', `录完后:${h.audio.status} ${h.audio.reason ?? ''}`);
+      equal(h.audio.codec, 'aac');
+      equal(film.getState().exporting, false);
+      film.dispose();
+    },
+  ],
+  [
+    'auto:带配音、编码端编不了音频,但播放器录不进配音(没有 Web Audio)→ 不回退,照常离线出片并报 dropped',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }];
+      // node 里没有 AudioContext:不注入 audio.env 就是没有 Web Audio 的浏览器。
+      const ex = createExportStub();
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: null });
+      const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env, { exportEnv: ex.env });
+      equal(film.getState().audio.available, false, '前提:播放器没有声音环境');
+      const h = film.exportVideo();
+      const o = track(h);
+      await quiet(async () => {
+        await settle(o);
+      });
+      equal(o.state, 'resolved', `导出没有完成:${o.code}`);
+      equal(h.mode, 'offline', '回退实时录制也录不进配音,不该回退');
+      equal(ex.recorderOptions().length, 0, '不该起实时录制');
+      equal(fe.log.finished, 1);
+      equal(fe.log.cancelled, 0);
+      equal(h.audio.status, 'dropped');
+      ok((h.audio.reason ?? '').includes('video/mp4'), `原因应点明容器:${h.audio.reason}`);
+      film.dispose();
+    },
+  ],
+  [
+    // 已知源码缺陷(未修,见报告):film.ts 的 voiceFallback 只看 voice !== null(有播放环境),
+    // 不看 prime() 之后到底建没建出上下文 —— 建不出时照样回退实时录制(占住预览、要保持前台),录出来还是没有配音。
+    'auto:播放环境建不出音频上下文(AudioContext 构造失败)时同样录不进配音 → 不回退,照常离线出片并报 dropped',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const dead = deadAudioEnv();
+      const ex = createExportStub();
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: null });
+      const { film } = preview(
+        [voiced(holdSegment('A', 0.3), [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }])],
+        fe.env,
+        { exportEnv: ex.env, audio: { env: dead } },
+      );
+      const h = film.exportVideo();
+      const o = track(h);
+      try {
+        // 回退成实时录制时预览时钟不走、永远录不完:settle 跑满上限后照样往下断言。
+        await quiet(async () => {
+          await settle(o, 500);
+        });
+        equal(
+          h.mode,
+          'offline',
+          `建不出音频上下文,回退实时录制也录不进配音(film.ts voiceFallback;实际回退后报 ${h.audio.status}:${h.audio.reason ?? ''})`,
+        );
+        equal(ex.recorderOptions().length, 0, '不该起实时录制');
+        equal(o.state, 'resolved', `导出没有完成:${o.code}`);
+        equal(fe.log.finished, 1, '离线成片没有交付');
+        equal(h.audio.status, 'dropped');
+      } finally {
+        await quiet(async () => {
+          h.cancel();
+          await settle(o);
+          film.dispose();
+        });
+      }
+    },
+  ],
+  [
+    'auto:环境解不了音频(没有 OfflineAudioContext)而播放器录得进配音 → 直接改走实时录制,不建离线画布、不探测编码器',
+    async () => {
+      const live = liveAudio(['a.wav']);
+      const ex = createExportStub();
+      const fe = fakeEnv({ recordOutput: false });
+      const { film } = preview(
+        [voiced(holdSegment('A', 1), [{ id: 'a', url: 'a.wav', start: 0, duration: 0.5 }])],
+        fe.env,
+        { exportEnv: ex.env, audio: { env: live.env } },
+      );
+      const h = film.exportVideo();
+      equal(live.env.contexts, 1, 'auto + 配音应在点击里同步建好音频上下文');
+      const o = track(h);
+      await quiet(async () => {
+        await flushTasks();
+        await flushTasks();
+      });
+      equal(h.mode, 'realtime', '解不了码时 auto 应改走实时录制');
+      equal(fe.log.requests.length, 0, '不该探测离线编码器');
+      equal(fe.canvases.length, 0, '不该建离线画布');
+      equal(film.getState().mode, 'exporting');
+      ok(ex.streamTracks().includes(live.track), '实时录制的媒体流里没有配音音轨');
+      // 实时录制接上了音轨;声音在不在出要到收带才定论,录制途中是「还没定」。
+      equal(h.audio.status, 'pending', `配音情况应以实时录制为准:${h.audio.status} ${h.audio.reason ?? ''}`);
+      h.cancel();
+      await settle(o);
+      equal(o.code, 'cancelled');
+      film.dispose();
+    },
+  ],
+  [
+    'auto + 带配音:点击导出时同步预热音频上下文但不出声,离线照常出片;没有配音、audio:false、显式 offline 都不建上下文',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }];
+
+      const live = liveAudio(['a.wav']);
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader });
+      const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env, {
+        exportEnv: createExportStub().env,
+        audio: { env: live.env },
+      });
+      equal(live.env.contexts, 0, '前提:声音没开时不建上下文');
+      const h = film.exportVideo();
+      equal(live.env.contexts, 1, '应在 exportVideo() 调用里同步建好上下文');
+      ok(live.env.ctx.resumes >= 1, '预热应顺手 resume(还在点击里,浏览器允许)');
+      equal(film.getState().audio.enabled, false, '预热不该替用户开声音');
+      const o = track(h);
+      await settle(o);
+      equal(o.state, 'resolved', `导出没有完成:${o.code}`);
+      equal(h.mode, 'offline', '离线带得上配音就不回退');
+      equal(h.audio.status, 'included');
+      equal(live.env.contexts, 1);
+      equal(live.env.ctx.nodes.length, 0, '预热之后不该真的出声');
+      // 预热的上下文最终没用上(离线带上了配音、声音仍关着):挂起它,不让它空跑。
+      ok(live.env.ctx.suspends >= 1, '没用上的上下文应当挂起');
+      equal(live.env.ctx.state, 'suspended');
+      film.dispose();
+
+      const cases: Array<[string, Segment[], object]> = [
+        ['没有配音', [holdSegment('A', 0.3)], {}],
+        ['audio:false', [voiced(holdSegment('A', 0.3), clip)], { audio: false }],
+        ['显式 offline', [voiced(holdSegment('A', 0.3), clip)], { mode: 'offline' }],
+      ];
+      for (const [name, segments, opts] of cases) {
+        const other = liveAudio(['a.wav']);
+        const fe2 = fakeEnv({ recordOutput: false, audioLoader: loader });
+        const p = preview(segments, fe2.env, { exportEnv: createExportStub().env, audio: { env: other.env } });
+        const h2 = p.film.exportVideo(opts);
+        equal(other.env.contexts, 0, `${name}:不该建音频上下文`);
+        const o2 = track(h2);
+        await settle(o2);
+        equal(o2.state, 'resolved', `${name}:导出没有完成:${o2.code}`);
+        equal(other.env.contexts, 0, `${name}:导出过程中也不该建音频上下文`);
+        p.film.dispose();
+      }
+    },
+  ],
+  [
+    'auto:带配音、编码端编不了音频,但实时录制录不了所选容器 → 不回退(免得把能出的无声片变成失败),照常离线出片并报 dropped',
+    async () => {
+      const loader = fakeLoader({ 'a.wav': { seconds: 0.3, value: () => 0.2 } });
+      const clip = [{ id: 'a', url: 'a.wav', start: 0, duration: 0.3 }];
+      const live = liveAudio(['a.wav']);
+      // MediaRecorder 只录得了 MP4;用户在下拉框里选的是离线才编得出的 WebM。
+      const ex = createExportStub({ supportedTypes: ['video/mp4', 'video/mp4;codecs=avc1,mp4a.40.2'] });
+      const fe = fakeEnv({ recordOutput: false, audioLoader: loader, audioCodec: null });
+      const { film } = preview([voiced(holdSegment('A', 0.3), clip)], fe.env, {
+        exportEnv: ex.env,
+        audio: { env: live.env },
+      });
+      const h = film.exportVideo({ mimeType: 'video/webm' });
+      equal(live.env.contexts, 0, '回退不了就不该预热音频上下文');
+      const o = track(h);
+      await quiet(async () => {
+        await settle(o);
+      });
+      equal(o.state, 'resolved', `应当照常出无声的离线成片:${o.code}`);
+      equal(o.type, 'video/webm');
+      equal(h.mode, 'offline');
+      equal(fe.log.cancelled, 0, '离线编码器不该被放弃');
+      equal(h.audio.status, 'dropped');
+      ok((h.audio.reason ?? '').includes('video/webm'), `原因应点明容器:${h.audio.reason}`);
       film.dispose();
     },
   ],

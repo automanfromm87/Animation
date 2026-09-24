@@ -126,7 +126,7 @@ export interface FilmOptions {
   /** 显示字幕,默认 true(有字幕的分段才显示)。 */
   subtitles?: boolean;
   subtitleStyle?: SubtitleStyle;
-  /** 显示底部进度条,默认 true。 */
+  /** 显示底部进度条,默认 true。导出的成片里也带同一套进度条(可用 exportVideo({ progress: false }) 只关成片里的)。 */
   progress?: boolean;
   progressStyle?: ProgressStyle;
   /**
@@ -190,14 +190,15 @@ export interface FilmController {
   /** 暂停/恢复播放。实时录制期间暂停请求被忽略(离线导出不占用预览,照常能停)。 */
   setPaused(paused: boolean): void;
   /**
-   * 导出整部片子,字幕/转场合成进视频。缺省离线逐帧渲染(浏览器支持 WebCodecs 时),
-   * 否则从头实时录制一遍;见 ExportOptions.mode。
+   * 导出整部片子,字幕/转场/进度条合成进视频,有配音时混进音轨。缺省离线逐帧渲染(浏览器支持 WebCodecs 时),
+   * 否则从头实时录制一遍;见 ExportOptions.mode。配音进没进成片看返回句柄的 audio。
    */
   exportVideo(options?: ExportOptions): ExportHandle;
   getState(): FilmState;
   /**
    * 开 / 关声音。浏览器的自动播放策略要求第一次开声音发生在用户操作(点击)里,
-   * 所以请在按钮的点击回调里同步调用它。片子里没有音频时是空操作。
+   * 所以请在按钮的点击回调里同步调用它。片子里没有音频时是空操作;
+   * 实时录制期间关声音被忽略(声音就是成片的音轨,关掉会录成静音)。
    */
   setAudioEnabled(enabled: boolean): void;
 }

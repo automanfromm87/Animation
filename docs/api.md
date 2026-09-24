@@ -65,39 +65,46 @@ import type { Segment } from './film';
 - **配音** `timedSegment({ id, name, lines: [{ id, text }] }, async (env) => …)`:按台词对齐的分段,
   `env.untilLine(id)` / `env.untilMark(lineId, mark)` / `env.remaining(id)` 踩提示点,时长与字幕时间来自配音时间表;
   `prepareVoice(segments, { sheetUrl })` 加载时统一套用(没有时间表时干跑排草稿),产出时长确定的普通分段(`segment.voice.clips`)。
-  控制器 `setAudioEnabled(on)`(须在点击回调里调用)、`getState().audio`;`exportVideo({ audio })` 成片带配音(缺省带)。
+  控制器 `setAudioEnabled(on)`(须在点击回调里调用;实时录制期间关声音被忽略)、`getState().audio`;
+  `exportVideo({ audio })` 成片带配音(缺省带),进没进成片看返回句柄的 `audio`。
   外部配音方的接入见 `docs/voice.md`。
 - **单帧预览** `previewFrameAt(segments, seconds, canvas)` → `{ index, offset, name, subtitle, position }`:
   只挂目标段、虚拟时钟快进(干跑)到位,画一帧即释放;与离线导出同一套步进。
   页面:`/?scene=derivatives&preview=480` 直接看第 480 秒。
 - **内部**:`FilmDriver`(调度状态机)、`timeline`(排片/字幕/刻度纯计算)、
-  `transition.Veil`(白闪)、`chrome`(DOM 字幕条/进度条,只渲染状态)、
+  `transition.Veil`(白闪)、`chrome`(DOM 字幕条/进度条,只渲染状态;进度条按 `ProgressVisual` 搭,
+  导出用它解析出的字体与颜色)、
   `offline`(离线导出驱动)。进度条点击精确到秒,方向键按段、PageUp/Down 按章节。
 
 ## export(导出层)
 
 ```ts
-controller.exportVideo({ mode?: 'auto' | 'offline' | 'realtime', fps?, maxLongEdge?, mimeType?, onProgress? })
+controller.exportVideo({ mode?: 'auto' | 'offline' | 'realtime', fps?, maxLongEdge?, mimeType?, onProgress?, audio?, progress? })
 ```
 
 - `auto`(默认):WebCodecs 能编就**离线**(虚拟时钟逐帧渲染,比实时快、可后台、不占预览),
-  否则退回**实时**(`captureStream` + `MediaRecorder`,前台实时录一遍)。
-- 返回 `{ done: Promise<Blob>, mimeType, mode, cancel() }`;失败 reject `FilmError`,
+  否则退回**实时**(`captureStream` + `MediaRecorder`,前台实时录一遍);片子有配音而离线带不上
+  (没有 OfflineAudioContext、编码端编不了音频)、实时录制又录得进(录得了所选容器、接得出录制音轨)时也改走实时。
+- `audio`(缺省 true):带配音;`progress`(缺省 true):带进度条,只能关 —— 播放器 `progress: false` 时成片恒不带。
+- 返回 `{ done: Promise<Blob>, mimeType, mode, audio, cancel() }`。`audio` 是 `ExportAudioReport
+  { status: 'pending' | 'none' | 'off' | 'included' | 'partial' | 'dropped', codec?, reason?, note?, failed? }`,
+  done resolve 之后是定论;配音没进成片不算导出失败,宿主应把 `reason` / `note` 告诉用户。失败 reject `FilmError`,
   宿主按 `code` 分支(`cancelled/disposed/busy/no-segments/unsupported/unsupported-mime/init/
   recorder/hidden/composite/tainted/track-ended/track-muted/recorder-stopped/stalled/
   empty-output/encoder-starved/segments-failed/crashed/encoder/overrun`),不要匹配文案,
   诊断细节在 `detail`。
-- 合成(`compositeFrame`:主画面 + 白闪 + 字幕)实时/离线共用一套;
+- 合成(`compositeFrame`:主画面 + 白闪 + 字幕 + 进度条)实时/离线共用一套;字幕与进度条的样式
+  (`SubtitleVisual` / `ProgressVisual`)由播放器解析一次,DOM 与导出共用;
   看门狗(`watchdog`)盯实时录制的断流(轨道结束/静音/自停/8 秒无数据)。
 
 ## scenes / 宿主 / 测试
 
-- `scenes/types`: `SceneHandle { dispose, resize, setPaused?, exportVideo? }`(四个入口统一句柄)、
+- `scenes/types`: `SceneHandle { dispose, resize, setPaused?, exportVideo?, audioAvailable?, audioEnabled?, setAudioEnabled? }`(四个入口统一句柄)、
   `SceneContext { safeArea?, clock?, viewport? }`(播放器传给分段的契约,离线/预览靠它复用场景)、
   `SceneEntry { title, kind, interactive, load, preview? }`。
 - `sceneRegistry`:?scene= 路由(防原型链污染)、场景懒加载、格式探测(`supportedFormats`:
-  MediaRecorder ∪ WebCodecs)、下载命名、错误文案。`?preview=` 只认非负有限数字。
-- `App.tsx`:薄视图 —— 画布 + 工具条(画幅/暂停/导出/格式)+ 预览徽标;挂载失败走 `loadError`。
+  MediaRecorder ∪ WebCodecs)、下载命名、错误文案、导出后的配音提示(`exportAudioMessage`)。`?preview=` 只认非负有限数字。
+- `App.tsx`:薄视图 —— 画布 + 工具条(画幅/暂停/声音/导出/格式)+ 预览徽标;导出完成后按配音报告显示提示;挂载失败走 `loadError`。
 - `testing`:自研小测试壳(`suite/equal/ok/close/quiet`)、`fakeCtx`(记录调用的假 2D 上下文)、
   `domStub`(rAF/时钟/画布桩)、`exportStub`(document/MediaRecorder/ResizeObserver 桩)。
   `node scripts/test.mjs [关键字...]` 按路径过滤;`TEST_TIMEOUT` 调单条超时。

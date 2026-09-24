@@ -1,5 +1,5 @@
 import { compositeFrame } from './composite';
-import type { ExportSubtitle } from './composite';
+import type { ExportProgress, ExportSubtitle } from './composite';
 import {
   CAPTURE_FPS,
   DEFAULT_MAX_LONG_EDGE,
@@ -63,6 +63,8 @@ export function browserRecorderEnv(): RecorderEnv | null {
 export interface RecorderFrame {
   veilAlpha: number;
   subtitle: ExportSubtitle | null;
+  /** 进度条(与这一帧的直播进度条同值);null 表示播放器没开进度条。 */
+  progress: ExportProgress | null;
   /** 当前影片位置(秒),进度回调用。 */
   position: number;
 }
@@ -100,13 +102,15 @@ const AUDIO_BITS_PER_SECOND = 128_000;
 type RecorderStage = 'armed' | 'recording' | 'stopping' | 'finished';
 
 /**
- * 一次导出会话:另开一张画布,每帧把主画面 + 白闪 + 字幕合成上去,captureStream 交给 MediaRecorder。
+ * 一次导出会话:另开一张画布,每帧把主画面 + 白闪 + 字幕 + 进度条合成上去,captureStream 交给 MediaRecorder。
  * 生命周期:create(同步初始化)-> 等播放器 start(导出段的第一个分段起播)-> 每帧 tick -> finish。
  */
 export class ExportRecorder {
   readonly done: Promise<Blob>;
   /** 选用的容器/编码。 */
   readonly mimeType: string;
+  /** 配音音轨并进了录制的媒体流。 */
+  readonly audio: boolean;
   readonly width: number;
   readonly height: number;
   private readonly init: ExportRecorderInit;
@@ -210,6 +214,7 @@ export class ExportRecorder {
     this.stream = stream;
     this.recorder = recorder;
     this.mimeType = picked.mimeType;
+    this.audio = withAudio;
     this.probe = env.createCanvas();
     this.done = new Promise<Blob>((resolve, reject) => {
       this.resolveDone = resolve;
@@ -244,6 +249,11 @@ export class ExportRecorder {
   /** 已创建、等待开录。 */
   get armed(): boolean {
     return this.stage === 'armed';
+  }
+
+  /** 编码器实际选用的类型(开录后可能带上 codecs,比如 'video/mp4;codecs=avc1.64001f,mp4a.40.2')。 */
+  get outputType(): string {
+    return this.recorder.mimeType || this.mimeType;
   }
 
   /** 开录。播放器在导出段的第一个分段起播时调用(那一刻白场正盖满画面)。 */
@@ -362,6 +372,7 @@ export class ExportRecorder {
         veilAlpha: frame.veilAlpha,
         veilColor: this.init.veilColor,
         subtitle: frame.subtitle,
+        progress: this.init.options?.progress === false ? null : frame.progress,
       });
       this.frames += 1;
       this.frameErrors = 0;
@@ -435,7 +446,7 @@ export class ExportRecorder {
       return;
     }
     // 用编码器实际选用的类型(可能带 codecs),拿不到再退回请求值。
-    const type = this.recorder.mimeType || this.mimeType;
+    const type = this.outputType;
     const blob = this.env.makeBlob(this.chunks, type);
     const seconds =
       this.startedAt !== null ? Math.max(0, (this.now() - this.startedAt) / 1000) : 0;

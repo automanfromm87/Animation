@@ -1,3 +1,4 @@
+import type { ProgressVisual } from '../export/composite';
 import { installDomStub } from '../testing/domStub';
 import type { DomStub, StubCanvas } from '../testing/domStub';
 import { installExportStub, installResizeObserverStub } from '../testing/exportStub';
@@ -6,7 +7,14 @@ import { equal, ok, suite } from '../testing/harness';
 import type { Segment, SegmentHandle } from './film';
 import { runFilm } from './film';
 import { createDomChrome } from './chrome';
-import { SUBTITLE_DEFAULTS, planFilm, resolveSubtitleVisual } from './timeline';
+import {
+  BAR_BLOCK_WITH_CHAPTERS_PX,
+  PROGRESS_DEFAULTS,
+  SUBTITLE_DEFAULTS,
+  planFilm,
+  resolveProgressVisual,
+  resolveSubtitleVisual,
+} from './timeline';
 
 /**
  * 覆盖层(白闪 / 字幕 / 进度条)用例:DOM 由导出桩提供,能记属性、派发事件。
@@ -72,6 +80,56 @@ async function run(dom: DomStub, frames: number): Promise<void> {
 
 const byCss = (ex: ExportStub, fragment: string): StubElement | undefined =>
   ex.created().find((el) => String(el.style['cssText'] ?? '').includes(fragment));
+
+const cssOf = (el: StubElement | undefined): string => String(el?.style['cssText'] ?? '');
+
+/** cssText 同时包含全部片段的第一个元素。 */
+const byCssAll = (ex: ExportStub, ...fragments: string[]): StubElement | undefined =>
+  ex.created().find((el) => fragments.every((f) => cssOf(el).includes(f)));
+
+/** 一眼能认出来的自定义进度条样式:每个字段都和默认值不同,DOM 上看到的就一定来自这份 spec。 */
+function customProgress(over: Partial<ProgressVisual> = {}): ProgressVisual {
+  return {
+    position: 'bottom',
+    blockPx: 38,
+    trackPx: 5,
+    color: '#f00',
+    background: '#0f0',
+    tickColor: 'rgba(1,2,3,0.4)',
+    tickWidthPx: 3,
+    tickPx: 8,
+    chapterTickPx: 14,
+    labelPx: 12,
+    labelOffsetPx: 20,
+    labelGapPx: 6,
+    labelColor: '#123456',
+    labelFontFamily: 'monospace',
+    ticks: [
+      { frac: 0, chapter: true, label: '一 · 甲' },
+      { frac: 0.5, chapter: false, label: null },
+    ],
+    ...over,
+  };
+}
+
+/** 直接用 createDomChrome 挂一套覆盖层(两段:章节卡 + 普通段)。 */
+function mountChrome(parent: StubElement, progress: ProgressVisual | null): ReturnType<typeof createDomChrome> {
+  const segs = [
+    probe('C', [], 1, undefined, { marker: 'chapter', chapter: '甲' }),
+    probe('S', [], 1),
+  ];
+  const plan = planFilm(segs);
+  return createDomChrome({
+    parent: parent as unknown as HTMLElement,
+    segments: segs,
+    plan,
+    veilColor: '#fff',
+    visual: resolveSubtitleVisual(1280, undefined, plan, 'serif'),
+    progress,
+    explicitFontFamily: false,
+    callbacks: { seek: () => undefined, togglePause: () => undefined },
+  });
+}
 
 export default suite('film 覆盖层', [
   [
@@ -218,7 +276,7 @@ export default suite('film 覆盖层', [
           plan,
           veilColor: '#fff',
           visual,
-          labelPx: 12,
+          progress: resolveProgressVisual(segs, undefined, plan, 1280, 'serif'),
           explicitFontFamily: false,
           callbacks: {
             seek: () => {
@@ -254,7 +312,7 @@ export default suite('film 覆盖层', [
           plan,
           veilColor: '#fff',
           visual,
-          labelPx: 12,
+          progress: resolveProgressVisual(segs, undefined, plan, 1280, 'serif'),
           explicitFontFamily: false,
           callbacks: {
             seek: (t) => targets.push(t),
@@ -287,6 +345,223 @@ export default suite('film 覆盖层', [
         } finally {
           g['getComputedStyle'] = saved;
         }
+      }),
+  ],
+  [
+    'DOM 进度条按共享的 ProgressVisual 搭:轨道/填充/章节刻度/普通刻度/章名的尺寸与颜色都取自 spec',
+    () =>
+      withChrome(async ({ ex, parent }) => {
+        const chrome = mountChrome(parent, customProgress());
+        const slider = ex.findByAttr('role', 'slider');
+        ok(slider, '进度条没建出来');
+        ok(cssOf(slider).includes('bottom:0;height:38px'), `点击区块高度应取 blockPx:${cssOf(slider)}`);
+        const track = byCss(ex, 'background:#0f0');
+        ok(track, '轨道没建出来');
+        ok(cssOf(track).includes('height:5px'), `轨道高度应取 trackPx:${cssOf(track)}`);
+        ok(cssOf(track).includes('bottom:0'), cssOf(track));
+        const fill = byCss(ex, 'width:0%');
+        ok(fill, '填充条没建出来');
+        ok(cssOf(fill).includes('background:#f00'), `填充色应取 color:${cssOf(fill)}`);
+        ok(cssOf(fill).includes('height:5px'), `填充高度应取 trackPx:${cssOf(fill)}`);
+        // 章节刻度:大刻度、填充色。
+        const chapterTick = byCss(ex, 'left:0.000%;');
+        ok(chapterTick, '章节刻度没建出来');
+        ok(cssOf(chapterTick).includes('height:14px'), cssOf(chapterTick));
+        ok(cssOf(chapterTick).includes('background:#f00'), cssOf(chapterTick));
+        ok(cssOf(chapterTick).includes('width:3px'), `刻度宽应取 tickWidthPx:${cssOf(chapterTick)}`);
+        // 普通刻度:小刻度、tickColor。
+        const tick = byCss(ex, 'left:50.000%;');
+        ok(tick, '普通刻度没建出来');
+        ok(cssOf(tick).includes('height:8px'), cssOf(tick));
+        ok(cssOf(tick).includes('background:rgba(1,2,3,0.4)'), cssOf(tick));
+        // 章名:只有 label 非 null 的刻度才有。
+        const labels = ex.created().filter((el) => el.textContent === '一 · 甲');
+        equal(labels.length, 1, '章名应当恰好一个');
+        const label = labels[0];
+        const lc = cssOf(label);
+        ok(lc.includes('bottom:20px'), `章名离边距应取 labelOffsetPx:${lc}`);
+        ok(lc.includes('left:calc(0.000% + 6px)'), `章名右移应取 labelGapPx:${lc}`);
+        ok(lc.includes('font-size:12px'), `章名字号应取 labelPx:${lc}`);
+        ok(lc.includes('line-height:1;'), `章名行高 1(导出按行框近边定位):${lc}`);
+        ok(lc.includes('color:#123456'), `章名颜色应取 labelColor:${lc}`);
+        // 章名继承页面字体,不把 spec 里的 labelFontFamily 写回 DOM(那是从 DOM 读出来给导出用的)。
+        ok(!lc.includes('font-family'), lc);
+        // 字体来自导出桩的 getComputedStyle。
+        equal(chrome.labelFontFamily, 'serif');
+        equal(chrome.fontFamily, 'serif');
+        chrome.dispose();
+      }),
+  ],
+  [
+    "进度条贴顶(position 'top'):区块、轨道、填充、刻度、章名、悬停提示全部改用 top 锚定",
+    () =>
+      withChrome(async ({ ex, parent }) => {
+        const chrome = mountChrome(parent, customProgress({ position: 'top' }));
+        const slider = ex.findByAttr('role', 'slider');
+        ok(cssOf(slider).includes('top:0;height:38px'), cssOf(slider));
+        ok(cssOf(byCss(ex, 'background:#0f0')).includes('top:0;'), '轨道没贴顶');
+        ok(cssOf(byCss(ex, 'width:0%')).includes('top:0;'), '填充没贴顶');
+        ok(cssOf(byCss(ex, 'left:0.000%;')).includes('top:0;'), '章节刻度没贴顶');
+        ok(cssOf(byCss(ex, 'left:50.000%;')).includes('top:0;'), '普通刻度没贴顶');
+        const label = ex.created().find((el) => el.textContent === '一 · 甲');
+        ok(cssOf(label).includes('top:20px;'), cssOf(label));
+        // 贴顶时提示放在区块下方:blockPx + 4。
+        ok(byCss(ex, 'top:42px;transform:translateX(-50%)'), '悬停提示没按贴顶定位');
+        const stray = ex.created().filter((el) => cssOf(el).includes('bottom:'));
+        equal(stray.length, 0, `贴顶时还有元素按 bottom 定位:${stray.map(cssOf).join(' | ')}`);
+        chrome.dispose();
+      }),
+  ],
+  [
+    'progress: null 不建进度条:没有 slider、没有填充,labelFontFamily 为 null;其余接口照常可调',
+    () =>
+      withChrome(async ({ ex, parent }) => {
+        const chrome = mountChrome(parent, null);
+        equal(ex.findByAttr('role', 'slider'), undefined, '关了进度条还建了 slider');
+        equal(byCss(ex, 'width:0%'), undefined, '关了进度条还建了填充条');
+        equal(chrome.labelFontFamily, null);
+        equal(chrome.fontFamily, 'serif', '字幕字体不受进度条开关影响');
+        // 没有进度条时 render / relayout / setSeekEnabled 都不能因为缺元素而抛错。
+        chrome.render({ veilAlpha: 0, subtitle: '', progress: 0.5, index: 1 });
+        chrome.relayout(resolveSubtitleVisual(600, undefined, planFilm([probe('A', [], 1)]), 'serif'), 10);
+        chrome.setSeekEnabled(false);
+        chrome.dispose();
+      }),
+  ],
+  [
+    'relayout(visual, labelPx) 更新章名字号与字幕样式;贴底时悬停提示跟着字幕块上移',
+    () =>
+      withChrome(async ({ ex, parent }) => {
+        const chrome = mountChrome(parent, customProgress());
+        const label = ex.created().find((el) => el.textContent === '一 · 甲');
+        ok(label, '章名没建出来');
+        const plan = planFilm([probe('A', [], 1, undefined, { chapter: '甲' })]);
+        const next = { ...resolveSubtitleVisual(600, undefined, plan, 'serif'), fontPx: 30, bottomPx: 50 };
+        chrome.relayout(next, 16);
+        equal(label?.style['fontSize'], '16px', '章名字号没跟着 relayout 变');
+        const sub = ex.findByAttr('aria-hidden', 'true');
+        equal(sub?.style['fontSize'], '30px');
+        equal(sub?.style['bottom'], '50px');
+        const tip = byCss(ex, 'transform:translateX(-50%)');
+        const expected = Math.round(50 + 30 * next.lineHeight + next.padY * 2 + 8);
+        equal(tip?.style['bottom'], `${expected}px`);
+        chrome.dispose();
+      }),
+  ],
+  [
+    'runFilm 的 progressStyle(颜色/轨道色/高度)一路传到 DOM 进度条;章名按出现顺序编号',
+    () =>
+      withChrome(async ({ ex, canvas }) => {
+        const segs = [
+          probe('C1', [], 1, undefined, { marker: 'chapter', chapter: '甲' }),
+          probe('S', [], 1),
+          probe('C2', [], 1, undefined, { marker: 'chapter', chapter: '乙' }),
+        ];
+        const film = runFilm(canvas, segs, {
+          transition: 0,
+          progressStyle: { color: '#abc', background: '#def', height: 4 },
+        });
+        const slider = ex.findByAttr('role', 'slider');
+        ok(slider, '进度条没建出来');
+        ok(cssOf(slider).includes(`height:${BAR_BLOCK_WITH_CHAPTERS_PX}px`), cssOf(slider));
+        ok(byCssAll(ex, 'height:4px', 'background:#def'), '轨道没用 progressStyle 的高度/轨道色');
+        ok(byCssAll(ex, 'height:4px', 'width:0%', 'background:#abc'), '填充没用 progressStyle 的高度/颜色');
+        const chapterTicks = ex
+          .created()
+          .filter((el) => cssOf(el).includes(`height:${PROGRESS_DEFAULTS.chapterTickPx}px`));
+        equal(chapterTicks.length, 2, '章节刻度个数不对');
+        ok(chapterTicks.every((el) => cssOf(el).includes('background:#abc')), '章节刻度没用填充色');
+        ok(
+          byCssAll(ex, `height:${PROGRESS_DEFAULTS.tickPx}px`, `background:${PROGRESS_DEFAULTS.tickColor}`),
+          '普通刻度没用默认 tickColor',
+        );
+        const labels = ex.created().filter((el) => el.textContent.includes(' · '));
+        equal(labels.map((el) => el.textContent).join('|'), '一 · 甲|二 · 乙');
+        film();
+      }),
+  ],
+  [
+    'runFilm 没给 progressStyle 时 DOM 进度条用 PROGRESS_DEFAULTS',
+    () =>
+      withChrome(async ({ ex, canvas }) => {
+        const film = runFilm(canvas, [probe('A', [], 1), probe('B', [], 1)], { transition: 0 });
+        ok(
+          byCssAll(ex, `height:${PROGRESS_DEFAULTS.trackPx}px`, `background:${PROGRESS_DEFAULTS.background}`),
+          '轨道没用默认样式',
+        );
+        ok(
+          byCssAll(ex, 'width:0%', `background:${PROGRESS_DEFAULTS.color}`),
+          '填充没用默认颜色',
+        );
+        film();
+      }),
+  ],
+  [
+    'FilmOptions.progress: false 不建进度条(没有 slider / 填充 / 刻度)',
+    () =>
+      withChrome(async ({ ex, canvas }) => {
+        const film = runFilm(
+          canvas,
+          [probe('C', [], 1, undefined, { marker: 'chapter', chapter: '甲' }), probe('S', [], 1)],
+          { transition: 0, progress: false },
+        );
+        equal(ex.findByAttr('role', 'slider'), undefined, '关了进度条还建了 slider');
+        equal(byCss(ex, 'width:0%'), undefined, '关了进度条还建了填充条');
+        equal(ex.created().filter((el) => el.textContent.includes(' · ')).length, 0, '关了进度条还建了章名');
+        // 字幕条等其余覆盖层照常建。
+        ok(ex.findByAttr('role', 'status'), '字幕播报区没建');
+        film();
+      }),
+  ],
+  [
+    '画布尺寸变化时章名字号跟着画布宽度变(与导出共用 progressLabelPx)',
+    () =>
+      withChrome(async ({ dom, ex, canvas }) => {
+        const ro = installResizeObserverStub();
+        try {
+          const film = runFilm(
+            canvas,
+            [probe('C', [], 1, undefined, { marker: 'chapter', chapter: '甲' }), probe('S', [], 1)],
+            { transition: 0 },
+          );
+          const label = ex.created().find((el) => el.textContent === '一 · 甲');
+          ok(cssOf(label).includes('font-size:14px'), `宽 1280 时章名 14px:${cssOf(label)}`);
+          ro.resize(canvas as unknown as StubCanvas, 600, 400);
+          await run(dom, 1);
+          equal(label?.style['fontSize'], '10px', '章名字号没有跟着画布宽度变');
+          film();
+        } finally {
+          ro.restore();
+        }
+      }),
+  ],
+  [
+    '进度条颜色取浏览器解析后的计算值(CSS 变量画布认不得,导出要用 rgb);拿不到计算值时为 null',
+    () =>
+      withChrome(async ({ parent }) => {
+        const g = globalThis as unknown as Record<string, unknown>;
+        const saved = g['getComputedStyle'] as (el: StubElement) => Record<string, unknown>;
+        // 模拟浏览器:把 CSS 变量解析成具体颜色。
+        const resolved: Record<string, string> = { 'var(--brand)': 'rgb(1, 2, 3)', 'var(--track)': 'rgb(4, 5, 6)' };
+        g['getComputedStyle'] = (el: StubElement) => {
+          const bg = /background:([^;]+);/.exec(el.style['cssText'] ?? '')?.[1];
+          return { ...saved(el), ...(bg !== undefined ? { backgroundColor: resolved[bg] ?? bg } : {}) };
+        };
+        try {
+          const chrome = mountChrome(parent, customProgress({ color: 'var(--brand)', background: 'var(--track)' }));
+          equal(chrome.progressColors?.color, 'rgb(1, 2, 3)');
+          equal(chrome.progressColors?.background, 'rgb(4, 5, 6)');
+          chrome.dispose();
+        } finally {
+          g['getComputedStyle'] = saved;
+        }
+        // 桩的 getComputedStyle 只给字体:拿不到颜色就不覆盖样式里的原值。
+        const plain = mountChrome(parent, customProgress());
+        equal(plain.progressColors, null);
+        plain.dispose();
+        const none = mountChrome(parent, null);
+        equal(none.progressColors, null, '没有进度条时没有颜色');
+        none.dispose();
       }),
   ],
 ]);

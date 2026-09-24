@@ -137,7 +137,21 @@ fieldset.aspect-bar {
   border-radius: 6px;
 }
 
-.export-error button {
+.export-notice {
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #fff;
+  /* 不透明的深琥珀:压在浅色画面上白字对比度也有 7:1(半透明的在浅底上不到 4.5:1)。 */
+  background: rgb(120, 80, 0);
+  padding: 4px 6px 4px 10px;
+  border-radius: 6px;
+}
+
+.export-error button,
+.export-notice button {
   border: 0;
   background: transparent;
   color: #fff;

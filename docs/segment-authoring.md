@@ -86,14 +86,16 @@ export const derivativesFilm: Segment[] = [
 ];
 ```
 
-章节卡(`marker: 'chapter'` + `chapter: '短标题'`)会在进度条上标出大刻度和章名;
+章节卡(`marker: 'chapter'` + `chapter: '短标题'`)会在进度条上标出大刻度和章名(导出的成片里同样有);
 普通段是小刻度,不用填。
 
 ## 6. 调试:单帧预览与秒级跳转
 
 - 单帧预览:打开 `/?scene=derivatives&preview=480`,直接看第 480 秒那一帧,
   不用从头播。改 `?preview=` 的数字切帧;画幅按钮照常用(重画同一帧)。
-  逐帧与离线导出同一套步进(30fps)、同一套合成,看到的即导出的。
+  逐帧与离线导出同一套步进(30fps),主画面与成片逐像素一致;字幕和底部进度条(刻度、章名)
+  是导出时另行合成的,预览里不画(字幕文本见 `previewFrameAt` 的返回值)。
+  进度条占住画面底部约 38px(有章名时),别把要紧的内容压在那里。
 - 进度条点击精确到秒:点哪跳到哪一秒(目标段重挂后快进过去)。
   方向键还是按段跳,PageUp/PageDown 按章节跳。
 - 程序里也要逐帧:`previewFrameAt(segments, seconds, canvas)` 返回
